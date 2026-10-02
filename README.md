@@ -101,6 +101,33 @@ Los clientes de control usan una API autenticada:
   sincronizar su bucle de control con los 10 Hz de los sensores sin tener que
   consultar más a menudo de lo necesario y sin leer valores repetidos.
 
+### Marcas de tiempo y latencia
+
+Cada dato de sensor se entrega al cliente con una **marca de tiempo** del
+momento en que se tomó la muestra. La marca usa el reloj del servidor y tiene una
+**precisión de al menos milisegundos**. Lo mismo vale para WebSocket y para
+polling.
+
+Con estas marcas el cliente puede:
+
+- Calcular el **delta de tiempo** entre dos muestras seguidas (unos 100 ms para
+  los infrarrojos) y usarlo en su control, por ejemplo en el término derivativo
+  o integral de un PID.
+- Detectar si se ha perdido o retrasado alguna muestra.
+- Estimar la **latencia de la conexión**.
+
+Para medir la latencia hay un **comando `ping`**, disponible tanto como
+**endpoint REST** como **comando WebSocket**. El servidor responde al instante
+con su **marca de tiempo actual**. Así el cliente puede:
+
+1. Anotar su hora local `t0` al enviar el `ping` y `t1` al recibir la respuesta
+   con la marca del servidor `ts`.
+2. Obtener el **tiempo de ida y vuelta**: `rtt = t1 - t0`.
+3. Estimar la **diferencia entre su reloj y el del servidor**:
+   `desfase ≈ ts - (t0 + t1) / 2`.
+4. Con ese desfase, calcular cuánto tarda en llegar cada dato de sensor: la hora
+   local de llegada menos (marca del sensor - desfase).
+
 El modo de conexión influye en cómo se detecta la desconexión del cliente (ver
 [Desconexión](#desconexión)).
 
@@ -255,9 +282,11 @@ claridad en el punto de intersección.
    robot.
 3. El servidor coloca el robot en un punto libre y aleatorio del mapa, orientado
    hacia el centro.
-4. El servidor envía la telemetría (por WebSocket, o la deja disponible para
-   polling REST, de forma inmediata o esperando al siguiente muestreo) a la
-   frecuencia objetivo de cada sensor: 10 Hz para los infrarrojos.
+4. El servidor genera la telemetría a la frecuencia objetivo de cada sensor
+   (10 Hz para los infrarrojos), con una marca de tiempo de precisión de
+   milisegundos en cada muestra. La envía por WebSocket o la deja disponible
+   para polling REST, de forma inmediata o esperando al siguiente muestreo. El
+   cliente puede usar el comando `ping` para medir la latencia.
 5. El cliente responde con los valores de los actuadores, que el servidor aplica
    en cuanto los recibe, con la inercia, la aceleración y la deceleración de los
    motores.

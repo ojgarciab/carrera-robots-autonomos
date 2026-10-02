@@ -21,14 +21,17 @@ El sistema sigue un modelo **cliente-servidor**:
                         │           SERVIDOR           │
   ┌─────────────────┐   │  - Simulación física (2D)    │   ┌──────────────────┐
   │ Cliente control │◄──┤  - Simulación de sensores    ├──►│ Cliente web      │
-  │ (algoritmo)     ├──►│  - Circuitos                 │   │ (espectador)     │
-  └─────────────────┘   │  - Gestión de clientes       │   └──────────────────┘
-  ┌─────────────────┐   │                              │   ┌──────────────────┐
+  │ (algoritmo)     ├──►│  - Circuitos                 │   │ (administrador)  │
+  └─────────────────┘   │  - Autenticación y usuarios  │   └──────────────────┘
+  ┌─────────────────┐   │  - API WebSocket y REST      │   ┌──────────────────┐
   │ Cliente control │◄─►│                              ├──►│ Cliente web      │
-  └─────────────────┘   └──────────────────────────────┘   └──────────────────┘
+  └─────────────────┘   └──────────────────────────────┘   │ (usuario)        │
+                                                           └──────────────────┘
 
-   telemetría ◄── servidor          servidor ──► estado de la carrera
-   actuadores ──► servidor                       y telemetría (solo lectura)
+   telemetría ◄── servidor          servidor ──► administrador: posición y
+   actuadores ──► servidor                       orientación exactas de todos
+                                                 usuario: sensores de su robot
+                                                 (ambos solo lectura)
 ```
 
 ### Servidor
@@ -41,11 +44,14 @@ El sistema sigue un modelo **cliente-servidor**:
   tener una frecuencia distinta).
 - Aplica los valores de los actuadores que recibe de cada cliente en el siguiente
   paso de la simulación.
-- Carga los circuitos y coloca los robots en la salida.
+- Carga los circuitos y coloca los robots en el mundo (ver
+  [Ciclo de vida del robot en el mundo](#ciclo-de-vida-del-robot-en-el-mundo)).
 
 ### Clientes de control
 
-- Se conectan al servidor y **eligen qué modelo de robot van a usar**.
+- Se **autentican** en el servidor y se conectan a través de la
+  [API de cliente](#api-de-cliente).
+- **Eligen qué modelo de robot van a usar**.
 - Según el modelo elegido, el servidor les envía la **telemetría** de ese robot
   (las lecturas de sus sensores).
 - El cliente ejecuta su algoritmo de navegación y devuelve los **valores de los
@@ -53,15 +59,40 @@ El sistema sigue un modelo **cliente-servidor**:
 - El cliente no tiene acceso al estado interno de la simulación: solo "ve" lo que
   ven los sensores de su robot, igual que un robot real.
 
-### Cliente web (espectador)
+### Cliente web
 
-- Se conecta al servidor desde el navegador (la comunicación puede hacerse con
-  **WebSockets**).
-- Sirve para **ver lo que está pasando** en la simulación: circuito, robots y su
-  posición.
-- Puede **recibir los datos de los sensores** de los robots (por ejemplo, para
-  mostrarlos en pantalla o para depurar).
-- **No puede controlar** ningún robot: su conexión es de solo lectura.
+Se conecta al servidor desde el navegador (la comunicación puede hacerse con
+**WebSockets**) y **no puede controlar** ningún robot: su conexión es de solo
+lectura. Tiene **dos niveles de acceso**:
+
+| Nivel | Qué puede ver | Uso típico |
+|-------|---------------|------------|
+| **Administrador** | El circuito y **todos** los robots con sus **coordenadas y orientación exactas**. Sobre cada robot se muestra una **etiqueta con el nombre del usuario** al que pertenece. | Proyectar la prueba o la carrera en televisiones o pantallas grandes. |
+| **Usuario** | **Solo los valores de los sensores de su propio robot**. No ve la posición real ni los robots de los demás. | Depurar su algoritmo viendo lo mismo que "ve" su robot. |
+
+Así se mantiene la regla de que un participante solo dispone de la información
+que le dan los sensores de su robot, mientras que el administrador tiene la
+vista completa de la carrera.
+
+## API de cliente
+
+Los clientes de control usan una API autenticada:
+
+1. **Autenticación.** El cliente se identifica ante el servidor y obtiene una
+   credencial de sesión. El cliente elige si la quiere como **token** (por
+   ejemplo, en la cabecera `Authorization`) o como **cookie**.
+2. **Datos en tiempo real.** Con esa credencial el cliente recibe la telemetría y
+   envía los valores de los actuadores por uno de estos dos medios, a su
+   elección:
+   - **WebSocket:** una conexión persistente a un endpoint WebSocket. El servidor
+     *empuja* las lecturas de los sensores en cuanto se generan y el cliente
+     envía los valores de los actuadores por la misma conexión.
+   - **Polling REST:** el cliente consulta periódicamente un endpoint REST para
+     leer los últimos valores de los sensores y envía los valores de los
+     actuadores con otra petición REST.
+
+El modo de conexión influye en cómo se detecta la desconexión del cliente (ver
+[Desconexión](#desconexión)).
 
 ## Motor de físicas
 
@@ -125,6 +156,47 @@ ella, y nunca puede "colarse" entre dos sensores sin que ninguno la detecte. Por
 ejemplo, con una línea de 19 mm de ancho, la separación entre sensores debería ser
 de menos de 19 mm.
 
+### Comportamiento de sensores y actuadores
+
+- **Sensores infrarrojos:** cada sensor genera **un valor cada 0,1 s (10 lecturas
+  por segundo)**. El servidor intenta mantener esa frecuencia al enviar la
+  telemetría.
+- **Motores:** el servidor aplica la nueva consigna de los motores **en cuanto
+  la recibe**, sin esperar al siguiente ciclo de sensores. Pero la velocidad
+  real de la rueda no cambia al instante: la simulación tiene en cuenta la
+  **inercia** y limita la **aceleración** y la **deceleración** del motor. Por
+  eso el robot tarda un tiempo en alcanzar la velocidad pedida o en frenar, y
+  el algoritmo de control tiene que tenerlo en cuenta.
+
+## Ciclo de vida del robot en el mundo
+
+### Entrada al mundo
+
+Cuando un cliente se conecta con su robot, este **entra al mundo** así:
+
+- Aparece en un **punto aleatorio del mapa** que **no esté ocupado por otro
+  robot**, respetando una **distancia de seguridad** con todos los demás.
+- Aparece **orientado hacia el centro del mapa**. De este modo, si el robot
+  avanza en línea recta, **siempre acabará cruzándose con la línea** en algún
+  punto, y el algoritmo tiene que encontrarla y engancharse a ella.
+
+### Desconexión
+
+Si el cliente deja de comunicarse con el servidor, los **actuadores se
+desconectan**: los motores dejan de recibir consigna y el robot **va decelerando
+hasta parar**, según la deceleración simulada. Si el cliente no vuelve en
+**5 minutos**, el robot **sale del mundo**.
+
+Cómo se detecta la desconexión depende del modo de conexión:
+
+| Modo | Se desconectan los actuadores… | Sale del mundo… |
+|------|--------------------------------|-----------------|
+| **WebSocket** | En cuanto se cierra o se pierde la conexión WebSocket. | A los **5 minutos** sin reconectar. |
+| **Polling REST** | Tras **5 segundos** sin recibir instrucciones para los motores. | A los **5 minutos** sin recibir instrucciones. |
+
+Si el cliente vuelve antes de que pasen los 5 minutos, recupera su robot donde se
+quedó parado.
+
 ## Circuitos de ejemplo
 
 ### Circuito 1: óvalo ("O")
@@ -162,14 +234,23 @@ claridad en el punto de intersección.
 ## Flujo de una sesión
 
 1. El servidor arranca y carga un circuito.
-2. Un cliente de control se conecta y elige un modelo de robot.
-3. El servidor crea el robot en la salida y empieza a enviarle telemetría a la
-   frecuencia objetivo de cada sensor.
-4. El cliente responde con los valores de los actuadores.
-5. El servidor aplica esos valores, avanza la simulación física y vuelve a
-   calcular las lecturas de los sensores.
-6. En paralelo, los clientes web espectadores reciben el estado de la carrera y,
-   si lo desean, la telemetría de los robots.
+2. Un cliente de control se autentica (con token o cookie) y elige un modelo de
+   robot.
+3. El servidor coloca el robot en un punto libre y aleatorio del mapa, orientado
+   hacia el centro.
+4. El servidor envía la telemetría (por WebSocket, o la deja disponible para
+   polling REST) a la frecuencia objetivo de cada sensor: 10 Hz para los
+   infrarrojos.
+5. El cliente responde con los valores de los actuadores, que el servidor aplica
+   en cuanto los recibe, con la inercia, la aceleración y la deceleración de los
+   motores.
+6. El servidor avanza la simulación física y vuelve a calcular las lecturas de
+   los sensores.
+7. A la vez, la pantalla de administración muestra todos los robots con su
+   posición, su orientación y el nombre de su usuario, y cada usuario ve en su
+   cliente web los sensores de su propio robot.
+8. Si el cliente se desconecta, el robot frena hasta parar, y a los 5 minutos
+   sin volver sale del mundo.
 
 ## Licencia
 

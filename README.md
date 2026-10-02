@@ -1,2 +1,305 @@
 # carrera-robots-autonomos
-Carrera de robots autónomos
+
+Carrera de robots autónomos.
+
+## Objetivo del proyecto
+
+Este proyecto es un **marco de trabajo para experimentar con código de conducción
+autónoma**, en concreto con **algoritmos de navegación local y global**.
+
+La idea es que cada participante escriba solo la "inteligencia" del robot: leer los
+sensores, decidir y mover los actuadores. Todo lo demás (física, sensores, circuito
+y visualización) lo pone el marco de trabajo. Así se pueden comparar algoritmos
+distintos sobre el mismo robot y el mismo circuito en igualdad de condiciones.
+
+## Arquitectura general
+
+El sistema sigue un modelo **cliente-servidor**:
+
+```
+                        ┌──────────────────────────────┐
+                        │           SERVIDOR           │
+  ┌─────────────────┐   │  - Simulación física (2D)    │   ┌──────────────────┐
+  │ Cliente control │◄──┤  - Simulación de sensores    ├──►│ Cliente web      │
+  │ (algoritmo)     ├──►│  - Circuitos                 │   │ (administrador)  │
+  └─────────────────┘   │  - Autenticación y usuarios  │   └──────────────────┘
+  ┌─────────────────┐   │  - API WebSocket y REST      │   ┌──────────────────┐
+  │ Cliente control │◄─►│                              ├──►│ Cliente web      │
+  └─────────────────┘   └──────────────────────────────┘   │ (usuario)        │
+                                                           └──────────────────┘
+
+   telemetría ◄── servidor          servidor ──► administrador: posición y
+   actuadores ──► servidor                       orientación exactas de todos
+                                                 usuario: sensores de su robot
+                                                 (ambos solo lectura)
+```
+
+### Servidor
+
+- Es la **única fuente de verdad** de la simulación.
+- Hace la **simulación de físicas** y el **comportamiento de los sensores** de
+  todos los robots.
+- Calcula las lecturas de cada sensor y las envía a su cliente **intentando
+  llegar a la frecuencia objetivo de cada sensor** (cada tipo de sensor puede
+  tener una frecuencia distinta).
+- Aplica los valores de los actuadores que recibe de cada cliente en el siguiente
+  paso de la simulación.
+- Carga los circuitos y coloca los robots en el mundo (ver
+  [Ciclo de vida del robot en el mundo](#ciclo-de-vida-del-robot-en-el-mundo)).
+
+### Clientes de control
+
+- Se **autentican** en el servidor y se conectan a través de la
+  [API de cliente](#api-de-cliente).
+- **Eligen qué modelo de robot van a usar**.
+- Según el modelo elegido, el servidor les envía la **telemetría** de ese robot
+  (las lecturas de sus sensores).
+- El cliente ejecuta su algoritmo de navegación y devuelve los **valores de los
+  actuadores** (motores, servos, etc.).
+- El cliente no tiene acceso al estado interno de la simulación: solo "ve" lo que
+  ven los sensores de su robot, igual que un robot real.
+
+### Cliente web
+
+Se conecta al servidor desde el navegador (la comunicación puede hacerse con
+**WebSockets**) y **no puede controlar** ningún robot: su conexión es de solo
+lectura. Tiene **dos niveles de acceso**:
+
+| Nivel | Qué puede ver | Uso típico |
+|-------|---------------|------------|
+| **Administrador** | El circuito y **todos** los robots con sus **coordenadas y orientación exactas**. Sobre cada robot se muestra una **etiqueta con el nombre del usuario** al que pertenece. | Proyectar la prueba o la carrera en televisiones o pantallas grandes. |
+| **Usuario** | **Solo los valores de los sensores de su propio robot**. No ve la posición real ni los robots de los demás. | Depurar su algoritmo viendo lo mismo que "ve" su robot. |
+
+Así se mantiene la regla de que un participante solo dispone de la información
+que le dan los sensores de su robot, mientras que el administrador tiene la
+vista completa de la carrera.
+
+## API de cliente
+
+Los clientes de control usan una API autenticada:
+
+1. **Autenticación.** El cliente se identifica ante el servidor y obtiene una
+   credencial de sesión. El cliente elige si la quiere como **token** (por
+   ejemplo, en la cabecera `Authorization`) o como **cookie**.
+2. **Datos en tiempo real.** Con esa credencial el cliente recibe la telemetría y
+   envía los valores de los actuadores por uno de estos dos medios, a su
+   elección:
+   - **WebSocket:** una conexión persistente a un endpoint WebSocket. El servidor
+     *empuja* las lecturas de los sensores en cuanto se generan y el cliente
+     envía los valores de los actuadores por la misma conexión.
+   - **Polling REST:** el cliente consulta periódicamente un endpoint REST para
+     leer los últimos valores de los sensores y envía los valores de los
+     actuadores con otra petición REST.
+
+### Lectura de sensores por polling
+
+- Por defecto, una petición de polling **responde inmediatamente con el último
+  valor obtenido** de cada sensor, aunque el cliente ya lo hubiera leído.
+- Si el cliente marca una **opción de espera** en la petición, la conexión
+  **queda en espera hasta que se produzca el siguiente muestreo** del sensor y
+  entonces responde con ese valor nuevo (*long polling*). Así el cliente puede
+  sincronizar su bucle de control con los 10 Hz de los sensores sin tener que
+  consultar más a menudo de lo necesario y sin leer valores repetidos.
+
+### Marcas de tiempo y latencia
+
+Cada dato de sensor se entrega al cliente con una **marca de tiempo** del
+momento en que se tomó la muestra. La marca usa el reloj del servidor y tiene una
+**precisión de al menos milisegundos**. Lo mismo vale para WebSocket y para
+polling.
+
+Con estas marcas el cliente puede:
+
+- Calcular el **delta de tiempo** entre dos muestras seguidas (unos 100 ms para
+  los infrarrojos) y usarlo en su control, por ejemplo en el término derivativo
+  o integral de un PID.
+- Detectar si se ha perdido o retrasado alguna muestra.
+- Estimar la **latencia de la conexión**.
+
+Para medir la latencia hay un **comando `ping`**, disponible tanto como
+**endpoint REST** como **comando WebSocket**. El servidor responde al instante
+con su **marca de tiempo actual**. Así el cliente puede:
+
+1. Anotar su hora local `t0` al enviar el `ping` y `t1` al recibir la respuesta
+   con la marca del servidor `ts`.
+2. Obtener el **tiempo de ida y vuelta**: `rtt = t1 - t0`.
+3. Estimar la **diferencia entre su reloj y el del servidor**:
+   `desfase ≈ ts - (t0 + t1) / 2`.
+4. Con ese desfase, calcular cuánto tarda en llegar cada dato de sensor: la hora
+   local de llegada menos (marca del sensor - desfase).
+
+El modo de conexión influye en cómo se detecta la desconexión del cliente (ver
+[Desconexión](#desconexión)).
+
+## Motor de físicas
+
+Puede usarse **cualquier motor de físicas**, ya que **basta con que sea 2D**: los
+robots se mueven sobre un plano y los circuitos son dibujos en el suelo. Algunas
+opciones válidas son Box2D, Chipmunk2D, Rapier (2D) o Matter.js, o un modelo
+cinemático/dinámico propio si es suficiente.
+
+## Modelos de robot
+
+Los robots se ofrecen en orden de dificultad creciente. Cada modelo define sus
+sensores (entradas del algoritmo) y sus actuadores (salidas del algoritmo).
+
+### Robot 1: sigue líneas con 3 sensores infrarrojos
+
+El robot más sencillo.
+
+- **Sensores:** 3 sensores infrarrojos orientados al suelo, uno a la izquierda,
+  otro en el centro y otro a la derecha.
+- **Actuadores:** 2 motores independientes (rueda izquierda y rueda derecha),
+  es decir, tracción diferencial.
+- **Apoyo:** una rueda de bola trasera en el centro, sin tracción.
+
+```
+        vista superior (avance hacia arriba)
+
+              I    C    D        ← sensores IR
+              ●    ●    ●
+          ┌─────────────────┐
+          │                 │
+       ███│                 │███  ← motores / ruedas
+       ███│                 │███    izquierda y derecha
+          │                 │
+          │        ○        │   ← rueda de bola trasera
+          └─────────────────┘
+```
+
+### Robot 2: sigue líneas con matriz de 5 sensores infrarrojos
+
+Igual que el robot 1 (mismo chasis, mismos 2 motores y misma rueda de bola),
+pero con una **matriz de 5 sensores infrarrojos** en la parte delantera. Al
+tener más resolución lateral, permite estimar mejor cuánto se ha desviado el
+robot de la línea y usar controles más finos (por ejemplo, PID).
+
+```
+           ●   ●   ●   ●   ●     ← matriz de 5 sensores IR
+          ┌─────────────────┐
+       ███│                 │███
+       ███│                 │███
+          │        ○        │
+          └─────────────────┘
+```
+
+### Restricción de diseño de los sensores
+
+**La distancia entre sensores infrarrojos contiguos debe ser menor que la anchura
+de la línea que deben seguir.**
+
+Así, la línea siempre queda bajo al menos un sensor mientras el robot esté sobre
+ella, y nunca puede "colarse" entre dos sensores sin que ninguno la detecte. Por
+ejemplo, con una línea de 19 mm de ancho, la separación entre sensores debería ser
+de menos de 19 mm.
+
+### Comportamiento de sensores y actuadores
+
+- **Sensores infrarrojos:** cada sensor genera **un valor cada 0,1 s (10 lecturas
+  por segundo)**. El servidor intenta mantener esa frecuencia al enviar la
+  telemetría.
+- **Motores:** el servidor aplica la nueva consigna de los motores **en cuanto
+  la recibe**, sin esperar al siguiente ciclo de sensores. Pero la velocidad
+  real de la rueda no cambia al instante: la simulación tiene en cuenta la
+  **inercia** y limita la **aceleración** y la **deceleración** del motor. Por
+  eso el robot tarda un tiempo en alcanzar la velocidad pedida o en frenar, y
+  el algoritmo de control tiene que tenerlo en cuenta.
+
+## Ciclo de vida del robot en el mundo
+
+### Entrada al mundo
+
+Cuando un cliente se conecta con su robot, este **entra al mundo** así:
+
+- Aparece en un **punto aleatorio del mapa** que **no esté ocupado por otro
+  robot**, respetando una **distancia de seguridad** con todos los demás.
+- Aparece **orientado hacia el centro del mapa**. De este modo, si el robot
+  avanza en línea recta, **siempre acabará cruzándose con la línea** en algún
+  punto, y el algoritmo tiene que encontrarla y engancharse a ella.
+
+### Desconexión
+
+Si el cliente deja de comunicarse con el servidor, los **actuadores se
+desconectan**: los motores dejan de recibir consigna y el robot **va decelerando
+hasta parar**, según la deceleración simulada. Si el cliente no vuelve en
+**5 minutos**, el robot **sale del mundo**.
+
+Cómo se detecta la desconexión depende del modo de conexión:
+
+| Modo | Se desconectan los actuadores… | Sale del mundo… |
+|------|--------------------------------|-----------------|
+| **WebSocket** | En cuanto se cierra o se pierde la conexión WebSocket. | A los **5 minutos** sin reconectar. |
+| **Polling REST** | Tras **5 segundos** sin recibir instrucciones para los motores. | A los **5 minutos** sin ninguna petición a la API (ni instrucciones de motores ni lecturas de sensores). |
+
+Con polling, la parada de los motores y la vida del robot se cuentan por
+separado. Los motores solo se mantienen vivos con instrucciones de motores. La
+vida del robot **se extiende con cualquier petición a la API**, y basta con
+consultar los datos de sus sensores. Por eso un cliente puede tener el robot
+parado y seguir leyendo sus sensores sin que salga del mundo.
+
+Si el cliente vuelve antes de que pasen los 5 minutos, **recupera el control del
+robot allí donde esté en ese momento**: puede seguir frenando por la inercia o
+estar ya parado.
+
+## Circuitos de ejemplo
+
+### Circuito 1: óvalo ("O")
+
+Circuito en **O** típico: **dos rectas y dos curvas**. Es el circuito de
+iniciación para comprobar que el robot sigue la línea de forma estable.
+
+```
+      ╭──────────────────╮
+     │                    │
+     │                    │
+      ╰──────────────────╯
+```
+
+### Circuito 2: ocho ("8")
+
+Circuito en forma de **8**: **dos curvas y dos rectas que se cruzan entre sí**,
+con un ángulo de cruce de **al menos 60°**.
+
+El cruce es la principal dificultad: al pasar por él los sensores ven a la vez la
+línea propia y la transversal, y el algoritmo debe seguir recto sin confundirse.
+Un ángulo de cruce de 60° o más garantiza que las dos líneas se distinguen con
+claridad en el punto de intersección.
+
+```
+      ╭───╮       ╭───╮
+     │     ╲     ╱     │
+     │      ╲   ╱      │
+     │        ╳        │    ← cruce (≥ 60°)
+     │      ╱   ╲      │
+     │     ╱     ╲     │
+      ╰───╯       ╰───╯
+```
+
+## Flujo de una sesión
+
+1. El servidor arranca y carga un circuito.
+2. Un cliente de control se autentica (con token o cookie) y elige un modelo de
+   robot.
+3. El servidor coloca el robot en un punto libre y aleatorio del mapa, orientado
+   hacia el centro.
+4. El servidor genera la telemetría a la frecuencia objetivo de cada sensor
+   (10 Hz para los infrarrojos), con una marca de tiempo de precisión de
+   milisegundos en cada muestra. La envía por WebSocket o la deja disponible
+   para polling REST, de forma inmediata o esperando al siguiente muestreo. El
+   cliente puede usar el comando `ping` para medir la latencia.
+5. El cliente responde con los valores de los actuadores, que el servidor aplica
+   en cuanto los recibe, con la inercia, la aceleración y la deceleración de los
+   motores.
+6. El servidor avanza la simulación física y vuelve a calcular las lecturas de
+   los sensores.
+7. A la vez, la pantalla de administración muestra todos los robots con su
+   posición, su orientación y el nombre de su usuario, y cada usuario ve en su
+   cliente web los sensores de su propio robot.
+8. Si el cliente se desconecta, o deja de mandar instrucciones de motores durante
+   5 s por polling, el robot frena hasta parar. Si pasan 5 minutos sin volver, o
+   sin ninguna petición a la API en el caso de polling, sale del mundo. Si
+   vuelve antes, recupera el control allí donde esté el robot.
+
+## Licencia
+
+Consulta el archivo [LICENSE](LICENSE).

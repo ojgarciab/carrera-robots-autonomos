@@ -91,6 +91,16 @@ Los clientes de control usan una API autenticada:
      leer los últimos valores de los sensores y envía los valores de los
      actuadores con otra petición REST.
 
+### Lectura de sensores por polling
+
+- Por defecto, una petición de polling **responde inmediatamente con el último
+  valor obtenido** de cada sensor, aunque el cliente ya lo hubiera leído.
+- Si el cliente marca una **opción de espera** en la petición, la conexión
+  **queda en espera hasta que se produzca el siguiente muestreo** del sensor y
+  entonces responde con ese valor nuevo (*long polling*). Así el cliente puede
+  sincronizar su bucle de control con los 10 Hz de los sensores sin tener que
+  consultar más a menudo de lo necesario y sin leer valores repetidos.
+
 El modo de conexión influye en cómo se detecta la desconexión del cliente (ver
 [Desconexión](#desconexión)).
 
@@ -192,10 +202,17 @@ Cómo se detecta la desconexión depende del modo de conexión:
 | Modo | Se desconectan los actuadores… | Sale del mundo… |
 |------|--------------------------------|-----------------|
 | **WebSocket** | En cuanto se cierra o se pierde la conexión WebSocket. | A los **5 minutos** sin reconectar. |
-| **Polling REST** | Tras **5 segundos** sin recibir instrucciones para los motores. | A los **5 minutos** sin recibir instrucciones. |
+| **Polling REST** | Tras **5 segundos** sin recibir instrucciones para los motores. | A los **5 minutos** sin ninguna petición a la API (ni instrucciones de motores ni lecturas de sensores). |
 
-Si el cliente vuelve antes de que pasen los 5 minutos, recupera su robot donde se
-quedó parado.
+Con polling, la parada de los motores y la vida del robot se cuentan por
+separado. Los motores solo se mantienen vivos con instrucciones de motores. La
+vida del robot **se extiende con cualquier petición a la API**, y basta con
+consultar los datos de sus sensores. Por eso un cliente puede tener el robot
+parado y seguir leyendo sus sensores sin que salga del mundo.
+
+Si el cliente vuelve antes de que pasen los 5 minutos, **recupera el control del
+robot allí donde esté en ese momento**: puede seguir frenando por la inercia o
+estar ya parado.
 
 ## Circuitos de ejemplo
 
@@ -239,8 +256,8 @@ claridad en el punto de intersección.
 3. El servidor coloca el robot en un punto libre y aleatorio del mapa, orientado
    hacia el centro.
 4. El servidor envía la telemetría (por WebSocket, o la deja disponible para
-   polling REST) a la frecuencia objetivo de cada sensor: 10 Hz para los
-   infrarrojos.
+   polling REST, de forma inmediata o esperando al siguiente muestreo) a la
+   frecuencia objetivo de cada sensor: 10 Hz para los infrarrojos.
 5. El cliente responde con los valores de los actuadores, que el servidor aplica
    en cuanto los recibe, con la inercia, la aceleración y la deceleración de los
    motores.
@@ -249,8 +266,10 @@ claridad en el punto de intersección.
 7. A la vez, la pantalla de administración muestra todos los robots con su
    posición, su orientación y el nombre de su usuario, y cada usuario ve en su
    cliente web los sensores de su propio robot.
-8. Si el cliente se desconecta, el robot frena hasta parar, y a los 5 minutos
-   sin volver sale del mundo.
+8. Si el cliente se desconecta, o deja de mandar instrucciones de motores durante
+   5 s por polling, el robot frena hasta parar. Si pasan 5 minutos sin volver, o
+   sin ninguna petición a la API en el caso de polling, sale del mundo. Si
+   vuelve antes, recupera el control allí donde esté el robot.
 
 ## Licencia
 

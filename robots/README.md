@@ -1,9 +1,10 @@
 # Definición de robots
 
-Cada modelo de robot se define en un fichero **YAML** de este directorio. El
-servidor los carga al arrancar, y la lista de modelos entre los que pueden
-elegir los clientes sale de aquí. El motor de simulación usa los parámetros
-físicos y la pasarela sirve las capas SVG al cliente web.
+Cada modelo de robot se define en un fichero **YAML** de este directorio. La
+pasarela los carga al arrancar. Los administradores eligen, al dar de alta cada
+mundo, qué modelos se permiten en él, y los clientes eligen entre esos. La
+pasarela sirve las capas SVG al cliente web y entrega a cada motor de simulación
+las definiciones de los robots permitidos en su mundo, que usa para la física.
 
 | Fichero | Modelo |
 |---------|--------|

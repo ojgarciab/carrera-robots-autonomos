@@ -1,20 +1,23 @@
 # Despliegue de referencia de la parte de servidor en Docker local.
 #
-# Incluye la pasarela de API, el motor de simulación, el bus de mensajes y la
-# base de datos. Los clientes no forman parte del despliegue: el cliente web es
-# un navegador que se conecta a la pasarela y los clientes de control corren de
-# forma independiente.
+# Incluye la pasarela de API, los motores de simulación (mundos), el bus de
+# mensajes y la base de datos. Los clientes no forman parte del despliegue: el
+# cliente web es un navegador que se conecta a la pasarela y los clientes de
+# control corren de forma independiente.
 #
 # Uso:
-#   cp .env.example .env    # y ajustar los valores
-#   docker compose up -d --build
+#   cp .env.example .env              # y ajustar los valores
+#   docker compose up -d --build      # bus, base de datos y pasarela
+#   # Dar de alta el mundo en la web y copiar su UUID y testigo en .env
+#   docker compose --profile mundos up -d --build
 #
 # Ver la sección "Despliegue local con Docker" del README.
 
 name: carrera-robots
 
 services:
-  # Pasarela de API: autenticación, WebSocket, REST, ping y cliente web.
+  # Pasarela de API: tokens de API, WebSocket, REST, ping, cliente web, registro
+  # de mundos y autenticación delegada (auth callout) de los motores en NATS.
   # Es el único servicio expuesto al exterior.
   pasarela:
     build: ./pasarela
@@ -23,12 +26,22 @@ services:
       - "${PASARELA_PUERTO:-8080}:8080"
     environment:
       NATS_URL: nats://bus:4222
+      # Usuario de la pasarela en NATS. También responde a las consultas de
+      # autenticación de los motores de simulación.
+      NATS_USUARIO: pasarela
+      NATS_PASSWORD: ${NATS_PASARELA_PASSWORD:?Define NATS_PASARELA_PASSWORD en .env}
+      # Clave privada (seed) con la que la pasarela firma las respuestas de
+      # autenticación. Su clave pública es NATS_CALLOUT_ISSUER.
+      NATS_CALLOUT_SEED: ${NATS_CALLOUT_SEED:?Define NATS_CALLOUT_SEED en .env}
       DATABASE_URL: postgres://${POSTGRES_USER:-carrera}:${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}@bd:5432/${POSTGRES_DB:-carrera}
       # Espera máxima de una petición de long polling antes de responder sin dato nuevo.
       LONG_POLLING_TIMEOUT_MS: ${LONG_POLLING_TIMEOUT_MS:-1000}
-      # Tiempo de vida de los tokens de sesión.
-      SESION_TTL: ${SESION_TTL:-12h}
-      # Definiciones de los robots (YAML y capas SVG para el cliente web).
+      # Duración de la sesión de la página web (no afecta a los tokens de API).
+      SESION_WEB_TTL: ${SESION_WEB_TTL:-12h}
+      # Caducidad máxima de los tokens de API de los usuarios.
+      TOKEN_API_MAX_DIAS: ${TOKEN_API_MAX_DIAS:-7}
+      # Definiciones de los robots: la pasarela sirve las capas SVG al cliente
+      # web y entrega a cada mundo las definiciones de sus robots permitidos.
       ROBOTS_DIR: /robots
     volumes:
       - ./robots:/robots:ro
@@ -41,14 +54,19 @@ services:
       - interna
 
   # Motor de simulación: física 2D, sensores, actuadores y ciclo de vida de
-  # los robots. Hay un servicio por mundo o circuito y no expone puertos: solo
-  # habla con el bus de mensajes.
+  # los robots. Hay un servicio por mundo y no expone puertos: solo habla con
+  # el bus de mensajes. Se identifica con el UUID y el testigo que genera un
+  # administrador al dar de alta el mundo en la página web, por eso está en el
+  # perfil "mundos" y se arranca después de darlo de alta.
   simulacion-ovalo:
     build: ./simulacion
+    profiles: ["mundos"]
     restart: unless-stopped
     environment: &entorno-simulacion
       NATS_URL: nats://bus:4222
-      MUNDO_ID: ovalo
+      # Identificador interno y testigo de acceso del mundo (ver README).
+      MUNDO_UUID: ${MUNDO_OVALO_UUID:-}
+      MUNDO_TESTIGO: ${MUNDO_OVALO_TESTIGO:-}
       CIRCUITO: ovalo
       # Número máximo de robots simultáneos en este mundo.
       MAX_ROBOTS: ${MAX_ROBOTS:-4}
@@ -57,16 +75,18 @@ services:
       PASO_FISICA_HZ: ${PASO_FISICA_HZ:-60}
       # Frecuencia de publicación del estado del mundo para la vista de administrador.
       ESTADO_MUNDO_HZ: ${ESTADO_MUNDO_HZ:-30}
+      # Frecuencia del latido que indica que el mundo está activo.
+      LATIDO_S: ${LATIDO_S:-2}
       # Temporizadores del ciclo de vida.
       PARADA_MOTORES_S: ${PARADA_MOTORES_S:-5}
       SALIDA_MUNDO_S: ${SALIDA_MUNDO_S:-300}
-      # Definiciones de los robots (parámetros físicos de cada modelo).
-      ROBOTS_DIR: /robots
-    volumes:
-      - ./robots:/robots:ro
     depends_on:
       bus:
         condition: service_healthy
+      # La pasarela autentica al motor en NATS y le entrega la configuración
+      # del mundo (robots permitidos y sus definiciones).
+      pasarela:
+        condition: service_started
     networks:
       - interna
     # La simulación es sensible a la latencia: se le reserva CPU para que el
@@ -76,28 +96,38 @@ services:
         reservations:
           cpus: "1"
 
-  # Segundo mundo con el circuito en 8. Descomentar para tener los dos a la vez.
+  # Segundo mundo con el circuito en 8. Descomentar para tener los dos a la vez
+  # y darlo de alta en la web como un mundo aparte, con su propio testigo.
   # simulacion-ocho:
   #   build: ./simulacion
+  #   profiles: ["mundos"]
   #   restart: unless-stopped
   #   environment:
   #     <<: *entorno-simulacion
-  #     MUNDO_ID: ocho
+  #     MUNDO_UUID: ${MUNDO_OCHO_UUID:-}
+  #     MUNDO_TESTIGO: ${MUNDO_OCHO_TESTIGO:-}
   #     CIRCUITO: ocho
-  #   volumes:
-  #     - ./robots:/robots:ro
   #   depends_on:
   #     bus:
   #       condition: service_healthy
+  #     pasarela:
+  #       condition: service_started
   #   networks:
   #     - interna
 
   # Bus de mensajes entre la pasarela y la simulación. Sin persistencia
-  # (no se activa JetStream): los mensajes son de tipo "vale el último".
+  # (no se activa JetStream): los datos en tiempo real son de tipo "vale el
+  # último". La autenticación de los motores se delega en la pasarela (auth
+  # callout), ver nats/nats.conf.
   bus:
     image: nats:2-alpine
     restart: unless-stopped
-    command: ["--http_port", "8222"]
+    command: ["-c", "/etc/nats/nats.conf"]
+    environment:
+      NATS_PASARELA_PASSWORD: ${NATS_PASARELA_PASSWORD:?Define NATS_PASARELA_PASSWORD en .env}
+      NATS_CALLOUT_ISSUER: ${NATS_CALLOUT_ISSUER:?Define NATS_CALLOUT_ISSUER en .env}
+    volumes:
+      - ./nats/nats.conf:/etc/nats/nats.conf:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
       interval: 5s
@@ -111,8 +141,9 @@ services:
     # ports:
     #   - "127.0.0.1:8222:8222"
 
-  # Base de datos: usuarios, credenciales y roles (administrador / usuario),
-  # e historial de carreras. No está en el camino de los datos en tiempo real.
+  # Base de datos: usuarios, roles, tokens de API (solo su hash), registro de
+  # mundos, acceso de cada usuario a los mundos e historial de carreras. No está en el camino de los datos en tiempo
+  # real y solo la usa la pasarela.
   bd:
     image: postgres:17-alpine
     restart: unless-stopped

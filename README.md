@@ -48,14 +48,18 @@ El sistema sigue un modelo **cliente-servidor**:
   [Ciclo de vida del robot en el mundo](#ciclo-de-vida-del-robot-en-el-mundo)).
 - Limita el **número máximo de robots** simultáneos con un parámetro de
   configuración (ver [Configuración](#configuración)).
-- Internamente se divide en una pasarela de API y un motor de simulación (ver
-  [Arquitectura del servidor](#arquitectura-del-servidor)).
+- Internamente se divide en una pasarela de API y uno o varios motores de
+  simulación, uno por **mundo** (ver
+  [Arquitectura del servidor](#arquitectura-del-servidor)). Los mundos los dan de
+  alta los administradores (ver [Registro de mundos](#registro-de-mundos)).
 
 ### Clientes de control
 
-- Se **autentican** en el servidor y se conectan a través de la
-  [API de cliente](#api-de-cliente).
-- **Eligen qué modelo de robot van a usar**.
+- Se conectan a través de la [API de cliente](#api-de-cliente) con un **token
+  de API de lectura-escritura** que el usuario genera en la página web (ver
+  [Tokens de API](#tokens-de-api)).
+- **Eligen el mundo**, de entre los servidores activos, y **qué modelo de robot
+  van a usar**, de entre los permitidos en ese mundo.
 - Según el modelo elegido, el servidor les envía la **telemetría** de ese robot
   (las lecturas de sus sensores).
 - El cliente ejecuta su algoritmo de navegación y devuelve los **valores de los
@@ -78,22 +82,84 @@ Así se mantiene la regla de que un participante solo dispone de la información
 que le dan los sensores de su robot, mientras que el administrador tiene la
 vista completa de la carrera.
 
+Además, la página web permite:
+
+- **Ver el listado de servidores activos**: los mundos registrados que están
+  funcionando en ese momento, con su nombre, los robots permitidos y cuántos
+  huecos libres quedan.
+- **Generar y revocar los tokens de API** del usuario (ver
+  [Tokens de API](#tokens-de-api)).
+- A los **administradores**, **dar de alta mundos** y generar su testigo de
+  acceso (ver [Registro de mundos](#registro-de-mundos)).
+
+Para entrar en la página web el usuario inicia sesión con su cuenta. Esa sesión
+solo sirve para la web; los clientes de control y los visores usan tokens de
+API.
+
+**Robot fuera del mundo.** Si el robot que se está viendo no está en el mundo,
+por ejemplo porque su dueño se desconectó hace más de 5 minutos o salió de forma
+voluntaria, el cliente web muestra el mensaje **"El robot no está actualmente en
+el mundo"**. No da la conexión por perdida: en cuanto el robot vuelve a entrar,
+recupera automáticamente la comunicación y sigue mostrando sus sensores.
+
 ## API de cliente
 
-Los clientes de control usan una API autenticada:
+Los clientes de control y los visores usan una API autenticada con **tokens de
+API**:
 
-1. **Autenticación.** El cliente se identifica ante el servidor y obtiene una
-   credencial de sesión. El cliente elige si la quiere como **token** (por
-   ejemplo, en la cabecera `Authorization`) o como **cookie**.
-2. **Datos en tiempo real.** Con esa credencial el cliente recibe la telemetría y
-   envía los valores de los actuadores por uno de estos dos medios, a su
-   elección:
+1. **Autenticación.** Cada petición lleva un token de API que el usuario ha
+   generado antes en la página web. No hay endpoint de inicio de sesión en la
+   API.
+2. **Datos en tiempo real.** Con ese token el cliente recibe la telemetría y,
+   si el token es de lectura-escritura, envía los valores de los actuadores. Hay
+   dos medios, a elección del cliente:
    - **WebSocket:** una conexión persistente a un endpoint WebSocket. El servidor
      *empuja* las lecturas de los sensores en cuanto se generan y el cliente
      envía los valores de los actuadores por la misma conexión.
    - **Polling REST:** el cliente consulta periódicamente un endpoint REST para
      leer los últimos valores de los sensores y envía los valores de los
      actuadores con otra petición REST.
+
+### Tokens de API
+
+Cada usuario genera sus tokens desde la página web. Hay dos tipos:
+
+| | Lectura-escritura (`rw`) | Solo lectura (`ro`) |
+|---|---|---|
+| Uso previsto | Su propio cliente de control. | Dejar que **terceros vean los sensores** de su robot sin poder controlarlo, por ejemplo en un visor web. |
+| Leer los sensores de su robot | ✅ | ✅ |
+| `ping` | ✅ | ✅ |
+| Enviar valores de los actuadores | ✅ | ❌ |
+| Entrar al mundo y salir de forma voluntaria | ✅ | ❌ |
+| **Alargar la vida del robot en el mundo** | ✅ | **❌** |
+
+Reglas:
+
+- **Como máximo uno de cada tipo por usuario.** Al generar un token nuevo se
+  revoca el anterior del mismo tipo, que deja de funcionar en ese momento.
+- **Caducidad de 7 días como máximo.** El usuario puede elegir una más corta y
+  puede revocar sus tokens en cualquier momento.
+- **Se muestran una sola vez**, al generarlos. El servidor solo guarda su
+  *hash*.
+- Son **opacos y aleatorios**, con un prefijo que indica su tipo (por ejemplo
+  `crt_rw_…` y `crt_ro_…`), lo que ayuda a reconocerlos y a detectarlos si se
+  publican por error. Se prefieren a los JWT porque un token revocado debe dejar
+  de funcionar al instante.
+- La pasarela guarda en memoria durante unos segundos los tokens ya validados,
+  para no consultar la base de datos en cada petición de polling. Cuando se
+  revoca un token, lo avisa por el bus para que todas las réplicas lo olviden.
+
+El token se envía de una de estas dos formas, a elección del cliente:
+
+- **Cabecera `Authorization: Bearer <token>`.** Es lo natural para los clientes
+  de control.
+- **Cookie.** Útil para el visor web. La cookie es `HttpOnly`, `Secure` y
+  `SameSite=Strict`, y la pasarela comprueba el `Origin` al abrir un WebSocket
+  para evitar que otra web use la cookie del usuario.
+
+Los navegadores no permiten poner la cabecera `Authorization` al abrir un
+WebSocket. Por eso, desde un navegador el token va en la cookie o en el primer
+mensaje de la conexión, **nunca en la URL**, porque acabaría en los registros.
 
 ### Lectura de sensores por polling
 
@@ -176,7 +242,8 @@ comunican por un **bus de mensajes**.
   simula nada, así que se pueden levantar varias réplicas detrás de un
   balanceador si hay muchos clientes.
 - **Base de datos.** Guarda los **usuarios**, sus credenciales y su **rol**
-  (administrador o usuario), además del historial de carreras. Solo la usa la
+  (administrador o usuario), los **tokens de API** (solo su *hash*), el
+  **registro de mundos** y el historial de carreras. Solo la usa la
   pasarela y queda **fuera del camino de los datos en tiempo real**: los
   sensores y los actuadores nunca pasan por ella.
 - **Motor de simulación.** Solo hace cálculo: avanza la física, muestrea los
@@ -184,22 +251,89 @@ comunican por un **bus de mensajes**.
   lo que su bucle no se ve afectado por clientes lentos o por picos de
   conexiones. Es la única fuente de verdad del mundo y también lleva los
   temporizadores del ciclo de vida (5 s y 5 minutos) y el límite de robots,
-  para que no dependan de qué réplica de la pasarela atienda al cliente.
+  para que no dependan de qué réplica de la pasarela atienda al cliente. No
+  tiene acceso a la base de datos: se identifica ante el bus con el testigo de
+  su mundo.
+
+### Registro de mundos
+
+Cada motor de simulación es un **mundo** que los **administradores dan de alta**
+desde la página web. La base de datos guarda de cada mundo:
+
+| Campo | Descripción |
+|-------|-------------|
+| Identificador interno | UUID aleatorio generado al darlo de alta. Se usa en los temas del bus (`mundo.<uuid>.…`). |
+| Nombre visible | El que ven los usuarios en el listado de servidores. |
+| Robots permitidos | Modelos de robot (los `id` de [`robots/`](robots/)) que se pueden usar en ese mundo. |
+| Testigo de acceso | Secreto aleatorio de 256 bits que **solo pueden generar los administradores**. Se muestra una sola vez y se guarda solo su *hash*. Se puede regenerar o revocar. |
+
+#### Cómo se conecta un motor de simulación
+
+El motor de simulación se conecta **directamente al bus**, sin pasar por la
+pasarela, para no añadir latencia. Para autenticarlo se usa el mecanismo de
+**autenticación delegada de NATS** (*auth callout*, disponible desde NATS 2.10):
+
+```
+  motor de simulación             NATS                    pasarela        base de datos
+          │  conectar con          │                          │                 │
+          │  uuid + testigo        │                          │                 │
+          ├───────────────────────►│  ¿es válido?             │                 │
+          │                        ├─────────────────────────►│  comprobar hash │
+          │                        │                          ├────────────────►│
+          │                        │  sí: permisos solo para  │◄────────────────┤
+          │                        │  mundo.<uuid>.>          │                 │
+          │  conectado             │◄─────────────────────────┤                 │
+          │◄───────────────────────┤                          │                 │
+```
+
+1. El motor se conecta a NATS presentando el UUID y el testigo de su mundo.
+2. NATS no decide por sí mismo: pregunta a la pasarela, que tiene una conexión
+   especial autorizada para responder a estas consultas.
+3. La pasarela comprueba el testigo contra la base de datos y responde con unos
+   permisos **limitados a los temas de ese mundo** (`mundo.<uuid>.>`). Un motor
+   no puede leer ni escribir en los temas de otro mundo.
+4. La respuesta va firmada con una clave (*nkey*) que solo conoce la pasarela;
+   NATS solo acepta respuestas con esa firma.
+
+Así la base de datos es la única fuente de verdad, dar de alta o revocar un
+mundo no obliga a reconfigurar ni a reiniciar NATS, y los datos en tiempo real
+siguen yendo directos por el bus. Si los motores corren en otras máquinas, NATS
+debe exponerse con TLS.
+
+#### Servidores activos
+
+Estar **registrado** (dato fijo en la base de datos) no es lo mismo que estar
+**activo** (en marcha ahora mismo). Cada motor publica un **latido** cada pocos
+segundos en `mundo.<uuid>.latido`, con su circuito, los robots que hay y el
+máximo admitido. La pasarela construye con esos latidos el **listado de
+servidores activos** de la página web. Un mundo sin latidos durante un tiempo se
+da por parado.
+
+Al conectarse, el motor pide a la pasarela la **configuración de su mundo**: los
+robots permitidos y sus definiciones YAML. Así no necesita tener una copia del
+directorio `robots/`.
 
 ### Mensajes entre componentes
 
 | Tema (ejemplo) | Sentido | Contenido |
 |----------------|---------|-----------|
-| `robot.<id>.sensores` | simulación → pasarela | Lecturas de sensores con su marca de tiempo. |
-| `robot.<id>.actuadores` | pasarela → simulación | Nueva consigna de los motores. |
-| `robot.<id>.actividad` | pasarela → simulación | Aviso de que el cliente sigue vivo (lectura de sensores o `ping` por polling, conexión o desconexión WebSocket). Se puede agrupar, por ejemplo uno por segundo como máximo. |
-| `mundo.<id>.control` | pasarela → simulación | Peticiones de entrada y salida de robots, con respuesta (aceptado o lleno). |
-| `mundo.<id>.estado` | simulación → pasarela | Posición y orientación exactas de todos los robots, solo para la vista de administrador. |
-| `mundo.<id>.eventos` | simulación → pasarela | Robot que entra, sale o pierde los actuadores. |
+| `mundo.<uuid>.robot.<id>.sensores` | simulación → pasarela | Lecturas de sensores con su marca de tiempo. |
+| `mundo.<uuid>.robot.<id>.actuadores` | pasarela → simulación | Nueva consigna de los motores. |
+| `mundo.<uuid>.robot.<id>.actividad` | pasarela → simulación | Aviso de que el cliente sigue vivo (solo con token de lectura-escritura: lectura de sensores o `ping` por polling, conexión o desconexión WebSocket). Se puede agrupar, por ejemplo uno por segundo como máximo. |
+| `mundo.<uuid>.control` | pasarela → simulación | Peticiones de entrada y de salida voluntaria de robots, con respuesta (aceptado o lleno). |
+| `mundo.<uuid>.estado` | simulación → pasarela | Posición y orientación exactas de todos los robots, solo para la vista de administrador. |
+| `mundo.<uuid>.eventos` | simulación → pasarela | Robot que entra, sale o pierde los actuadores. |
+| `mundo.<uuid>.latido` | simulación → pasarela | El mundo está activo: circuito, robots presentes y máximo admitido. |
+| `mundo.<uuid>.configuracion` | simulación → pasarela | Petición de la configuración del mundo al conectarse (robots permitidos y sus definiciones). |
+
+Todos los temas de un mundo empiezan por `mundo.<uuid>.`, de modo que un único
+permiso (`mundo.<uuid>.>`) basta para aislar cada motor de simulación de los
+demás.
 
 Hay dos tipos de mensajes, y cada uno se trata de forma distinta.
 
-**Datos en tiempo real** (`sensores`, `actuadores`, `actividad` y `estado`).
+**Datos en tiempo real** (`sensores`, `actuadores`, `actividad`, `estado` y
+`latido`).
 Son de tipo **"vale el último"**: una lectura de sensor o una consigna de motor
 antigua no sirve de nada si ya hay una más nueva. Por eso:
 
@@ -209,7 +343,7 @@ antigua no sirve de nada si ya hay una más nueva. Por eso:
   vida pequeño) y **descartar los mensajes viejos**, en vez de acumularlos y
   entregarlos con retraso.
 
-**Operaciones de ciclo de vida** (`control` y `eventos`). Cambian quién controla
+**Operaciones de ciclo de vida** (`control`, `eventos` y `configuracion`). Cambian quién controla
 cada robot, así que **no se pueden descartar**:
 
 - Se hacen como **petición-respuesta**, con un **identificador de petición**
@@ -319,34 +453,68 @@ Docker local.
 
 | Servicio | Imagen | Puertos expuestos | Función |
 |----------|--------|-------------------|---------|
-| `pasarela` | Se construye desde `./pasarela` | `8080` (configurable) | API REST, WebSocket, `ping`, autenticación y cliente web. Es el único servicio accesible desde fuera. |
-| `simulacion-ovalo` | Se construye desde `./simulacion` | Ninguno | Motor de simulación del mundo con el circuito en O. Tiene CPU reservada para que el bucle de física no compita con el resto de servicios. |
-| `simulacion-ocho` | Se construye desde `./simulacion` | Ninguno | Segundo mundo con el circuito en 8. Viene comentado; se activa descomentándolo. |
-| `bus` | `nats:2-alpine` | Ninguno (`8222` para monitorización, comentado y solo en `127.0.0.1`) | Bus de mensajes sin persistencia entre la pasarela y la simulación. |
-| `bd` | `postgres:17-alpine` | Ninguno | Base de datos de usuarios, roles e historial, con un volumen persistente (`datos-bd`). |
+| `pasarela` | Se construye desde `./pasarela` | `8080` (configurable) | API REST, WebSocket, `ping`, tokens de API, registro de mundos, autenticación de los motores en NATS (*auth callout*) y cliente web. Es el único servicio accesible desde fuera. |
+| `simulacion-ovalo` | Se construye desde `./simulacion` | Ninguno | Motor de simulación de un mundo con el circuito en O. Está en el perfil `mundos` porque necesita el UUID y el testigo del mundo. Tiene CPU reservada para que el bucle de física no compita con el resto de servicios. |
+| `simulacion-ocho` | Se construye desde `./simulacion` | Ninguno | Segundo mundo con el circuito en 8. Viene comentado; se activa descomentándolo y dándolo de alta como otro mundo. |
+| `bus` | `nats:2-alpine` | Ninguno (`8222` para monitorización, comentado y solo en `127.0.0.1`) | Bus de mensajes sin persistencia entre la pasarela y los motores. Su configuración está en [`nats/nats.conf`](nats/nats.conf). |
+| `bd` | `postgres:17-alpine` | Ninguno | Base de datos de usuarios, roles, tokens de API, mundos e historial, con un volumen persistente (`datos-bd`). |
 
 Todos los servicios comparten una red interna. Solo la pasarela publica un
 puerto en la máquina anfitriona. El directorio [`robots/`](robots/) se monta en
-modo de solo lectura en la pasarela, que sirve las capas SVG y la lista de
-modelos, y en la simulación, que usa los parámetros físicos. Así se pueden
-añadir o cambiar modelos sin reconstruir las imágenes. La pasarela y la simulación esperan a que el
-bus y la base de datos estén sanos (*healthcheck*) antes de arrancar.
+modo de solo lectura en la pasarela, que sirve las capas SVG al cliente web y
+entrega a cada mundo las definiciones de sus robots permitidos. Así se pueden
+añadir o cambiar modelos sin reconstruir las imágenes. La pasarela espera a que
+el bus y la base de datos estén sanos (*healthcheck*) antes de arrancar, y los
+motores esperan al bus y a la pasarela.
 
 Los directorios `./pasarela` y `./simulacion`, con su `Dockerfile`, se crearán
 al implementar cada componente. Mientras no existan, se pueden levantar solo
 la infraestructura: `docker compose up -d bus bd`.
 
+**Autenticación en NATS.** El usuario `pasarela` entra con contraseña. Cualquier
+otra conexión, como la de un motor de simulación, pasa por el *auth callout*:
+NATS espera a que la pasarela la apruebe y, si no lo hace, la rechaza. Las
+respuestas de la pasarela van firmadas con una clave *nkey* que se genera una
+vez y se guarda en `.env`.
+
 ### Puesta en marcha
 
-```sh
-cp .env.example .env          # ajustar al menos POSTGRES_PASSWORD
-docker compose up -d --build  # construye y arranca todos los servicios
-docker compose logs -f        # ver los registros
-docker compose down           # parar (añadir -v para borrar la base de datos)
-```
+1. Preparar el fichero `.env`:
 
-Después, abrir `http://localhost:8080` en el navegador y conectar los clientes
-de control a esa misma dirección.
+   ```sh
+   cp .env.example .env
+   # Ajustar POSTGRES_PASSWORD y NATS_PASARELA_PASSWORD.
+   # Generar el par de claves del auth callout y copiarlas en
+   # NATS_CALLOUT_SEED (línea que empieza por "SA") y NATS_CALLOUT_ISSUER
+   # (línea que empieza por "A"):
+   docker run --rm natsio/nats-box nk -gen account -pubout
+   ```
+
+2. Arrancar el bus, la base de datos y la pasarela:
+
+   ```sh
+   docker compose up -d --build
+   ```
+
+3. Abrir `http://localhost:8080`, entrar como administrador, **dar de alta el
+   mundo** y copiar su UUID y su testigo en `MUNDO_OVALO_UUID` y
+   `MUNDO_OVALO_TESTIGO` del `.env`.
+
+4. Arrancar los motores de simulación:
+
+   ```sh
+   docker compose --profile mundos up -d --build
+   ```
+
+5. Cada usuario genera sus tokens de API en la página web y conecta sus
+   clientes de control a `http://localhost:8080`.
+
+Otros comandos útiles:
+
+```sh
+docker compose logs -f                  # ver los registros
+docker compose --profile mundos down    # parar todo (añadir -v para borrar la base de datos)
+```
 
 ### Variables de entorno
 
@@ -360,7 +528,14 @@ plantilla.
 | `POSTGRES_DB` | `carrera` | `bd`, `pasarela` | Nombre de la base de datos. |
 | `PASARELA_PUERTO` | `8080` | `pasarela` | Puerto de la máquina anfitriona donde se publica la pasarela. |
 | `LONG_POLLING_TIMEOUT_MS` | `1000` | `pasarela` | Espera máxima de una petición de long polling. |
-| `SESION_TTL` | `12h` | `pasarela` | Duración de los tokens de sesión. |
+| `NATS_PASARELA_PASSWORD` | *(obligatoria)* | `bus`, `pasarela` | Contraseña del usuario `pasarela` en NATS. |
+| `NATS_CALLOUT_SEED` | *(obligatoria)* | `pasarela` | Clave privada con la que la pasarela firma las respuestas del *auth callout*. |
+| `NATS_CALLOUT_ISSUER` | *(obligatoria)* | `bus` | Clave pública correspondiente; NATS solo acepta respuestas firmadas con ella. |
+| `SESION_WEB_TTL` | `12h` | `pasarela` | Duración de la sesión en la página web. No afecta a los tokens de API. |
+| `TOKEN_API_MAX_DIAS` | `7` | `pasarela` | Caducidad máxima de los tokens de API. |
+| `MUNDO_OVALO_UUID` | *(vacía)* | simulación | UUID del mundo, obtenido al darlo de alta en la página web. |
+| `MUNDO_OVALO_TESTIGO` | *(vacía)* | simulación | Testigo de acceso del mundo, obtenido al darlo de alta. |
+| `LATIDO_S` | `2` | simulación | Segundos entre latidos que indican que el mundo está activo. |
 | `MAX_ROBOTS` | `4` | simulación | Número máximo de robots simultáneos en cada mundo. |
 | `PASO_FISICA_HZ` | `60` | simulación | Frecuencia del paso fijo de la física. |
 | `ESTADO_MUNDO_HZ` | `30` | simulación | Frecuencia con la que se publica el estado del mundo para la vista de administrador. |
@@ -525,12 +700,13 @@ capas:                           # de abajo arriba
 
 ### Entrada al mundo
 
-Cuando un cliente se conecta con su robot, este **entra al mundo** así:
+Cuando un cliente se conecta con su robot (con un token de lectura-escritura),
+este **entra al mundo** así:
 
+- Solo puede usar un modelo de robot **permitido en ese mundo**.
 - Solo entra si queda sitio: si ya está el **número máximo de robots**
   configurado, el servidor rechaza la entrada con un error que lo indica, y el
   cliente puede volver a intentarlo más tarde.
-
 - Aparece en un **punto aleatorio del mapa** que **no esté ocupado por otro
   robot**, respetando una **distancia de seguridad** con todos los demás.
 - Aparece **orientado hacia el centro del mapa**. De este modo, si el robot
@@ -549,17 +725,45 @@ Cómo se detecta la desconexión depende del modo de conexión:
 | Modo | Se desconectan los actuadores… | Sale del mundo… |
 |------|--------------------------------|-----------------|
 | **WebSocket** | En cuanto se cierra o se pierde la conexión WebSocket. | A los **5 minutos** sin reconectar. |
-| **Polling REST** | Tras **5 segundos** sin recibir instrucciones para los motores. | A los **5 minutos** sin ninguna petición a la API (ni instrucciones de motores, ni lecturas de sensores, ni `ping`). |
+| **Polling REST** | Tras **5 segundos** sin recibir instrucciones para los motores. | A los **5 minutos** sin ninguna petición a la API con el token de lectura-escritura (ni instrucciones de motores, ni lecturas de sensores, ni `ping`). |
 
 Con polling, la parada de los motores y la vida del robot se cuentan por
 separado. Los motores solo se mantienen vivos con instrucciones de motores. La
-vida del robot **se extiende con cualquier petición a la API**: basta con
-consultar los datos de sus sensores o hacer un `ping`. Por eso un cliente puede tener el robot
-parado y seguir leyendo sus sensores sin que salga del mundo.
+vida del robot **se extiende con cualquier petición a la API hecha con el token
+de lectura-escritura**: basta con consultar los datos de sus sensores o hacer un
+`ping`. Por eso un cliente puede tener el robot parado y seguir leyendo sus
+sensores sin que salga del mundo.
+
+Las peticiones con el **token de solo lectura no alargan la vida del robot**.
+Así, un tercero que solo está mirando no puede mantener en el mundo el robot de
+alguien que ya se ha ido.
 
 Si el cliente vuelve antes de que pasen los 5 minutos, **recupera el control del
 robot allí donde esté en ese momento**: puede seguir frenando por la inercia o
 estar ya parado.
+
+### Salida voluntaria
+
+El cliente puede enviar una **señal de salida** (comando `salir`, disponible
+como endpoint REST y como comando WebSocket, solo con el token de
+lectura-escritura). El robot **sale del mundo en ese momento**, sin esperar a los
+5 minutos.
+
+La siguiente conexión de ese cliente **entra desde cero**: se busca de nuevo un
+punto libre y aleatorio del mapa, orientado hacia el centro, como en la primera
+entrada. Es útil, por ejemplo, para reiniciar una prueba sin esperar a que
+caduque el robot anterior.
+
+### Visores con token de solo lectura
+
+Un visor (por ejemplo, el cliente web de un tercero) sigue a un robot aunque
+este no esté en el mundo:
+
+- Mientras el robot no está, el visor muestra **"El robot no está actualmente en
+  el mundo"**.
+- Cuando el robot vuelve a entrar, ya sea recuperando su posición o desde cero
+  tras una salida voluntaria, la pasarela **reanuda automáticamente** el envío
+  de sus sensores al visor, sin que este tenga que reconectarse.
 
 ## Circuitos de ejemplo
 
@@ -597,9 +801,13 @@ claridad en el punto de intersección.
 
 ## Flujo de una sesión
 
-1. El servidor arranca y carga un circuito.
-2. Un cliente de control se autentica (con token o cookie) y elige un modelo de
-   robot.
+1. Un administrador da de alta el mundo en la página web. El motor de
+   simulación arranca con su UUID y su testigo, se autentica en el bus, pide la
+   configuración de su mundo, carga su circuito y empieza a publicar latidos.
+   Desde ese momento aparece en el listado de servidores activos.
+2. El usuario genera en la página web su token de API de lectura-escritura. Su
+   cliente de control se conecta con él (como `Bearer` o como cookie), elige un
+   mundo activo y un modelo de robot permitido en ese mundo.
 3. Si no se ha alcanzado el número máximo de robots, el servidor coloca el robot
    en un punto libre y aleatorio del mapa, orientado hacia el centro. Si se ha
    alcanzado, rechaza la entrada.
@@ -615,11 +823,18 @@ claridad en el punto de intersección.
    los sensores.
 7. A la vez, la pantalla de administración muestra todos los robots con su
    posición, su orientación y el nombre de su usuario, y cada usuario ve en su
-   cliente web los sensores de su propio robot.
+   cliente web los sensores de su propio robot. Con el token de solo lectura,
+   terceros pueden ver también esos sensores, sin poder controlar el robot ni
+   alargar su vida en el mundo.
 8. Si el cliente se desconecta, o deja de mandar instrucciones de motores durante
    5 s por polling, el robot frena hasta parar. Si pasan 5 minutos sin volver, o
-   sin ninguna petición a la API en el caso de polling, sale del mundo. Si
-   vuelve antes, recupera el control allí donde esté el robot.
+   sin ninguna petición a la API con el token de lectura-escritura en el caso de
+   polling, sale del mundo. Si vuelve antes, recupera el control allí donde esté
+   el robot.
+9. El cliente también puede enviar el comando `salir`: el robot sale del mundo
+   en ese momento y la siguiente conexión entra desde cero, en un punto nuevo
+   orientado hacia el centro. Mientras tanto, los visores muestran "El robot no
+   está actualmente en el mundo" y se reanudan solos cuando el robot vuelve.
 
 ## Licencia
 

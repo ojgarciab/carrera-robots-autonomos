@@ -3,7 +3,7 @@
 Cada modelo de robot se define en un fichero **YAML** de este directorio. La
 pasarela los carga al arrancar. Los administradores eligen, al dar de alta cada
 mundo, qué modelos se permiten en él, y los clientes eligen entre esos. La
-pasarela sirve las capas SVG al cliente web y entrega a cada motor de simulación
+pasarela sirve las capas SVG al visor web y entrega a cada motor de simulación
 las definiciones de los robots permitidos en su mundo, que usa para la física.
 
 | Fichero | Modelo |
@@ -70,7 +70,7 @@ inercia del motor.
 
 ## Capas SVG
 
-El dibujo del robot en el frontal web se compone de **varias capas SVG
+El dibujo del robot en el visor web se compone de **varias capas SVG
 apiladas**, enlazadas en el campo `capas` con rutas relativas al fichero YAML.
 
 - Se pintan **en orden, de la primera a la última**: las partes opacas de una
@@ -95,5 +95,5 @@ el mismo convenio:
 - Todas las capas usan el mismo `viewBox` (`-90 -90 180 180` en los robots de
   prácticas), para que se superpongan sin desplazamientos.
 
-El frontal web coloca el conjunto de capas en la posición del robot y lo gira
+El visor web coloca el conjunto de capas en la posición del robot y lo gira
 según su orientación.

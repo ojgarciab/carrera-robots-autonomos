@@ -14,8 +14,15 @@ descripcion: >-
 
 cuerpo:
   # Radio del círculo que envuelve al robot. Se usa para las colisiones entre
-  # robots y para la distancia de seguridad al entrar al mundo.
+  # robots y con las paredes, y para la distancia de seguridad al entrar al mundo.
   radio_colision: 0.085
+  # Masa en kg. Los dos robots de prácticas tienen la misma, así que al
+  # empujarse ninguno tiene ventaja.
+  masa: 0.25
+  # Coeficiente de rozamiento del cuerpo con otros robots y con las paredes.
+  rozamiento: 0.4
+  # Coeficiente de restitución en los choques: 0 no rebota, 1 rebota sin perder energía.
+  restitucion: 0.3
 
 actuadores:
   - id: motor_izquierdo
@@ -29,6 +36,9 @@ actuadores:
     deceleracion_max: 0.8
     # Deceleración cuando el motor se desactiva (rueda libre por rozamiento).
     deceleracion_reposo: 0.3
+    # Coeficiente de rozamiento de la rueda con el suelo: limita la fuerza que
+    # puede hacer antes de patinar (al empujar o al ser empujado).
+    adherencia: 0.8
   - id: motor_derecho
     tipo: motor
     posicion: [0.020, -0.055]
@@ -37,6 +47,7 @@ actuadores:
     aceleracion_max: 0.5
     deceleracion_max: 0.8
     deceleracion_reposo: 0.3
+    adherencia: 0.8
 
 # Apoyos sin tracción: no son entradas ni salidas del algoritmo.
 apoyos:

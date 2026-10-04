@@ -27,9 +27,19 @@ Al dibujar en SVG, donde el eje `y` crece hacia abajo, hay que cambiar el signo 
 | `id` | Sí | Identificador único del circuito. Es el valor de `CIRCUITO` en el motor. |
 | `nombre` | Sí | Nombre legible. |
 | `descripcion` | No | Descripción breve. |
-| `dimensiones` | Sí | `[ancho, alto]` del mapa en metros. Los robots no pueden salir de él. |
+| `dimensiones` | Sí | `[ancho, alto]` del mapa en metros. Sus bordes son paredes. |
 | `ancho_linea` | Sí | Anchura de la línea en metros. `0.025` (25 mm) para los robots de prácticas: ver la [restricción de diseño de los sensores](../README.md#restricción-de-diseño-de-los-sensores). |
 | `trazados` | Sí | Lista de trazados. Cada uno es una secuencia continua de tramos. |
+| `paredes.rozamiento` | Sí | Coeficiente de rozamiento de las paredes. Con el del robot, decide cuánto se frena y cuánto gira al rozarlas. |
+| `paredes.restitucion` | Sí | Coeficiente de restitución de las paredes, de `0` (no rebota) a `1`. |
+
+### Paredes
+
+Los cuatro bordes del mapa son **paredes** rígidas. Un robot que llega a una
+no la atraviesa: según el ángulo y la velocidad con que llega, **rebota**, se
+**arrastra** a lo largo de ella o **gira** por el rozamiento, como en un choque
+real. En cada contacto se combinan los coeficientes de la pared y del robot
+(ver [`robots/README.md`](../robots/README.md#formato-del-fichero)).
 
 ### Trazados
 

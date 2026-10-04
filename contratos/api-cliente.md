@@ -52,8 +52,8 @@ Las respuestas de error REST tienen este formato, con el código HTTP correspond
 | `GET /circuitos/<id>` | `ro`/`rw` | Definición del circuito, en JSON, con la misma estructura que su YAML. |
 | `POST /mundos/<uuid>/entrar` | `rw` | Cuerpo `{"modelo": "<id>"}`. Respuesta `{"resultado": "dentro" \| "recuperado", "modelo": "<id>"}`. |
 | `POST /mundos/<uuid>/salir` | `rw` | Salida voluntaria. Respuesta `{"resultado": "fuera"}`, también si ya estaba fuera. |
-| `GET /mundos/<uuid>/robot` | `ro`/`rw` | `{"en_mundo": true, "modelo": "<id>"}` o `{"en_mundo": false}`. |
-| `GET /mundos/<uuid>/sensores` | `ro`/`rw` | Últimos valores de los sensores del robot del usuario (ver abajo). |
+| `GET /mundos/<uuid>/robot` | `ro`/`rw` | `{"en_mundo": true, "modelo": "<id>"}` o `{"en_mundo": false}`. Un administrador puede consultar el de otro usuario con `?usuario=<uuid>`. |
+| `GET /mundos/<uuid>/sensores` | `ro`/`rw` | Últimos valores de los sensores del robot del usuario (ver abajo). Un administrador puede leer los de cualquier robot con `?usuario=<uuid>`. |
 | `POST /mundos/<uuid>/actuadores` | `rw` | Cuerpo `{"valores": {"motor_izquierdo": 0.5, "motor_derecho": 0.4}}`. Respuesta `204`. |
 
 ### `GET /mundos`
@@ -99,20 +99,21 @@ Endpoint `GET /ws`. Cada mensaje es un objeto JSON con un campo `tipo`. Si el cl
 | `{"tipo": "autenticar", "token": "…"}` | — | Primer mensaje, si no se usó cabecera ni cookie. Respuesta `{"tipo": "autenticado", "usuario", "rol", "token"}`. |
 | `{"tipo": "entrar", "mundo": "<uuid>", "modelo": "<id>"}` | `rw` | Entra al mundo y se suscribe a los sensores de su robot. Respuesta `{"tipo": "entrado", "mundo", "resultado"}`. |
 | `{"tipo": "seguir", "mundo": "<uuid>"}` | `ro`/`rw` | Se suscribe a los sensores del robot del usuario sin entrar al mundo. Lo usan el visor y los terceros. |
+| `{"tipo": "seguir", "mundo": "<uuid>", "usuario": "<uuid>"}` | admin | Se suscribe a los sensores del robot de **otro** usuario. Solo para administradores; lo usa la vista de administrador del visor al seleccionar un robot. Los mensajes `sensores` y `robot` de esa suscripción llevan el campo `usuario`. |
 | `{"tipo": "observar", "mundo": "<uuid>"}` | admin | Vista de administrador: estado de todos los robots. |
-| `{"tipo": "dejar", "mundo": "<uuid>"}` | `ro`/`rw` | Cancela `seguir` u `observar`. |
+| `{"tipo": "dejar", "mundo": "<uuid>", "usuario"?: "<uuid>"}` | `ro`/`rw` | Cancela `seguir` u `observar`. Con `usuario`, solo el `seguir` de ese robot. |
 | `{"tipo": "actuadores", "mundo": "<uuid>", "valores": {…}}` | `rw` | Nueva consigna de los motores. Sin respuesta, salvo error. |
 | `{"tipo": "salir", "mundo": "<uuid>"}` | `rw` | Salida voluntaria. Respuesta `{"tipo": "salido", "mundo"}`. |
 | `{"tipo": "ping"}` | `ro`/`rw` | Respuesta `{"tipo": "pong", "ts": …}`. |
 
-Una conexión puede seguir u observar varios mundos a la vez.
+El protocolo permite seguir u observar varios mundos por la misma conexión, aunque el visor web muestra uno cada vez.
 
 ### De la pasarela al cliente
 
 | Mensaje | Descripción |
 |---------|-------------|
-| `{"tipo": "sensores", "mundo", "ts", "seq", "valores"}` | Cada muestra de los sensores, en cuanto llega del motor. |
-| `{"tipo": "robot", "mundo", "en_mundo": true \| false}` | El robot entra o sale del mundo. Se envía al suscribirse y en cada cambio. Con `en_mundo: false`, el visor muestra "El robot no está actualmente en el mundo". |
+| `{"tipo": "sensores", "mundo", "usuario", "ts", "seq", "valores"}` | Cada muestra de los sensores, en cuanto llega del motor. `usuario` es el dueño del robot. |
+| `{"tipo": "robot", "mundo", "usuario", "en_mundo": true \| false}` | El robot entra o sale del mundo. Se envía al suscribirse y en cada cambio. Con `en_mundo: false`, el visor muestra "El robot no está actualmente en el mundo". |
 | `{"tipo": "motores", "mundo", "activos": true \| false}` | Los motores se desactivan (sin instrucciones o por desconexión) o se reactivan. |
 | `{"tipo": "estado", "mundo", "ts", "robots": [{"usuario", "nombre", "modelo", "x", "y", "theta"}]}` | Solo con `observar`: posición (m) y orientación (rad) exactas de todos los robots, a 30 Hz. |
 | `{"tipo": "error", "error": "<código>", "mensaje"}` | Error de un comando, con los mismos códigos que REST. |

@@ -16,6 +16,9 @@ descripcion: >-
 
 cuerpo:
   radio_colision: 0.085
+  masa: 0.25
+  rozamiento: 0.4
+  restitucion: 0.3
 
 actuadores:
   - id: motor_izquierdo
@@ -26,6 +29,7 @@ actuadores:
     aceleracion_max: 0.5
     deceleracion_max: 0.8
     deceleracion_reposo: 0.3
+    adherencia: 0.8
   - id: motor_derecho
     tipo: motor
     posicion: [0.020, -0.055]
@@ -34,6 +38,7 @@ actuadores:
     aceleracion_max: 0.5
     deceleracion_max: 0.8
     deceleracion_reposo: 0.3
+    adherencia: 0.8
 
 apoyos:
   - id: rueda_bola

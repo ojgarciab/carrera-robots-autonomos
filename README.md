@@ -95,7 +95,7 @@ es de solo lectura. Tiene **dos vistas**:
 
 | Vista | Qué muestra | Uso típico |
 |-------|-------------|------------|
-| **Administrador** | El circuito y **todos** los robots con sus **coordenadas y orientación exactas**, dibujados con sus [capas SVG](robots/README.md#capas-svg). Sobre cada robot se muestra una **etiqueta con el nombre del usuario** al que pertenece. | Proyectar la prueba o la carrera en televisiones o pantallas grandes. |
+| **Administrador** | El circuito y **todos** los robots con sus **coordenadas y orientación exactas**, dibujados con sus [capas SVG](robots/README.md#capas-svg). Sobre cada robot se muestra una **etiqueta con el nombre del usuario** al que pertenece. Al seleccionar un robot se ven también **los valores de sus sensores**. | Proyectar la prueba o la carrera en televisiones o pantallas grandes, y revisar el comportamiento de cualquier robot. |
 | **Usuario** | **Solo los valores de los sensores de un robot**. No muestra la posición real ni los robots de los demás. | Que el dueño depure su algoritmo viendo lo mismo que "ve" su robot, o que terceros sigan ese robot con el token de solo lectura. |
 
 Así se mantiene la regla de que un participante solo dispone de la información
@@ -104,7 +104,9 @@ vista completa de la carrera.
 
 El visor se autentica con un **token de API de solo lectura**. La vista de
 administrador solo está disponible si el token pertenece a un usuario con **rol
-de administrador**.
+de administrador**, que puede ver además los sensores de **cualquier robot**.
+
+El visor muestra **un mundo cada vez**: para ver otro, se cambia de mundo.
 
 **Robot fuera del mundo.** Si el robot que se está viendo no está en el mundo,
 por ejemplo porque su dueño se desconectó hace más de 5 minutos o salió de forma
@@ -124,8 +126,10 @@ control y los visores usan tokens de API. Permite:
   nombre, los robots permitidos y si están **activos** en ese momento.
 - **Generar y revocar los tokens de API** del usuario (ver
   [Tokens de API](#tokens-de-api)).
-- A los **administradores**: **dar de alta usuarios y mundos**, generar el
-  testigo de acceso de cada mundo (ver [Registro de mundos](#registro-de-mundos))
+- **Cambiar su contraseña** cuando quiera.
+- A los **administradores**: **dar de alta usuarios y mundos**, **restablecer
+  la contraseña** de un usuario (que le comunican ellos mismos y que el usuario
+  puede cambiar después), generar el testigo de acceso de cada mundo (ver [Registro de mundos](#registro-de-mundos))
   y **gestionar a qué mundos tiene acceso cada usuario** (ver
   [Acceso de los usuarios a los mundos](#acceso-de-los-usuarios-a-los-mundos)).
 
@@ -310,7 +314,7 @@ comunican por un **bus de mensajes**.
   │          MOTOR DE SIMULACIÓN (uno por mundo/circuito)    │
   │  - Bucle de física 2D a paso fijo                        │
   │  - Muestreo de sensores a su frecuencia (10 Hz IR)       │
-  │  - Inercia, aceleración y deceleración de los motores    │
+  │  - Inercia, aceleración, choques, empujes y paredes      │
   │  - Ciclo de vida: entrada, temporizadores, salida        │
   │  - Límite de número máximo de robots                     │
   └──────────────────────────────────────────────────────────┘
@@ -396,6 +400,13 @@ las peticiones de `control` que le hace la pasarela (ver
 Así la base de datos es la única fuente de verdad, dar de alta o revocar un
 mundo no obliga a reconfigurar ni a reiniciar NATS, y los datos en tiempo real
 siguen yendo directos por el bus.
+
+**Revocar el testigo corta la conexión.** Si un administrador regenera o revoca
+el testigo de un mundo, la pasarela recibe el aviso de la base de datos y
+**expulsa al instante** la conexión del motor de NATS, con la operación `KICK`
+de la cuenta de sistema de NATS. El motor solo podrá volver a conectarse con el
+testigo nuevo. Para ello la pasarela necesita, además de su usuario normal, un
+usuario en la cuenta de sistema de NATS con permiso solo para esa operación.
 
 **NATS nunca se expone fuera del clúster.** Los motores de simulación corren en
 distintas máquinas de un clúster Docker Swarm o Kubernetes y llegan a NATS solo
@@ -692,16 +703,29 @@ plantilla.
 
 Puede usarse **cualquier motor de físicas**, ya que **basta con que sea 2D**: los
 robots se mueven sobre un plano y los circuitos son dibujos en el suelo. Algunas
-opciones válidas son Box2D, Chipmunk2D, Rapier (2D) o Matter.js, o un modelo
-cinemático/dinámico propio si es suficiente.
+opciones válidas son Box2D, Chipmunk2D (en Python, `pymunk`), Rapier (2D) o
+Matter.js.
 
-Los robots de prácticas son **lentos** (20 cm/s como máximo), así que
-prácticamente **no derrapan ni pierden el control** aunque giren a máxima
-velocidad. Para ellos basta un **modelo cinemático de tracción diferencial**
-sin deslizamiento de las ruedas, más los límites de aceleración y deceleración
-de cada motor. Los robots veloces, por ejemplo de competición, pueden necesitar
-un modelo dinámico con rozamiento y derrape, además de una frecuencia de física
-mayor.
+Hace falta un **modelo dinámico**, con masas y fuerzas, y no solo uno
+cinemático, porque los robots interactúan entre sí y con el mapa:
+
+- **Los robots pueden empujarse.** Cada robot tiene su **masa** (los de
+  prácticas, todos la misma) y en un choque se reparten el impulso según sus
+  masas y velocidades.
+- **Los bordes del mapa son paredes.** Un robot que llega a una **rebota**, se
+  **arrastra** a lo largo de ella o **gira** por el rozamiento, según el ángulo
+  de incidencia, su velocidad y los coeficientes de rozamiento y restitución
+  del robot y de la pared.
+- **Las ruedas pueden patinar.** Cada rueda empuja al robot hasta su velocidad
+  objetivo y se resiste a deslizar de lado, pero con una fuerza limitada por su
+  **adherencia**. Si otro robot o una pared la vencen, patina.
+
+Mientras nada estorba, los robots de prácticas son **lentos** (20 cm/s como
+máximo), así que sus ruedas no patinan y se mueven igual que con un modelo
+cinemático de tracción diferencial con los límites de aceleración y
+deceleración de cada motor. Los parámetros físicos de cada robot (masa,
+rozamiento, restitución y adherencia) están en su [definición](robots/README.md)
+y los de las paredes, en la del [circuito](circuitos/README.md#paredes).
 
 ## Modelos de robot
 

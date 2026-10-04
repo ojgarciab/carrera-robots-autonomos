@@ -14,6 +14,13 @@ La justificación del diseño (por qué NATS, mensajes "vale el último" frente 
 
 Un motor no puede leer ni escribir en los temas de otro mundo.
 
+**Revocación.** Si el testigo de un mundo se regenera o se revoca, la pasarela
+**corta al instante** la conexión de su motor con la operación `KICK` de la
+cuenta de sistema de NATS (`$SYS.REQ.SERVER.<id_servidor>.KICK` con el `cid` de
+la conexión). Para saber a quién expulsar, guarda el identificador del servidor
+y de la conexión que le llegan en cada petición del *auth callout*. El motor
+solo podrá volver a entrar con el testigo nuevo.
+
 ## Temas
 
 `<usuario>` es el UUID del dueño del robot. Todas las marcas `ts` siguen la [convención común](README.md#convenciones-comunes).

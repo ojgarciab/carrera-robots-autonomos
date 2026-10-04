@@ -14,6 +14,11 @@ descripcion: >-
 dimensiones: [2.4, 1.6]
 ancho_linea: 0.025
 
+# Los bordes del mapa son paredes: los robots rebotan o se arrastran por ellas.
+paredes:
+  rozamiento: 0.5
+  restitucion: 0.3
+
 trazados:
   - id: ovalo
     cerrado: true

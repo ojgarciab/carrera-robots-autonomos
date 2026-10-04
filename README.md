@@ -85,12 +85,14 @@ vista completa de la carrera.
 Además, la página web permite:
 
 - **Ver el listado de servidores activos**: los mundos registrados que están
-  funcionando en ese momento, con su nombre, los robots permitidos y cuántos
-  huecos libres quedan.
+  funcionando en ese momento **y a los que el usuario tiene acceso**, con su
+  nombre, los robots permitidos y cuántos huecos libres quedan.
 - **Generar y revocar los tokens de API** del usuario (ver
   [Tokens de API](#tokens-de-api)).
 - A los **administradores**, **dar de alta mundos** y generar su testigo de
-  acceso (ver [Registro de mundos](#registro-de-mundos)).
+  acceso (ver [Registro de mundos](#registro-de-mundos)), y **gestionar a qué
+  mundos tiene acceso cada usuario** (ver
+  [Acceso de los usuarios a los mundos](#acceso-de-los-usuarios-a-los-mundos)).
 
 Para entrar en la página web el usuario inicia sesión con su cuenta. Esa sesión
 solo sirve para la web; los clientes de control y los visores usan tokens de
@@ -120,9 +122,28 @@ API**:
      leer los últimos valores de los sensores y envía los valores de los
      actuadores con otra petición REST.
 
+### Acceso de los usuarios a los mundos
+
+- **Los administradores deciden a qué mundos tiene acceso cada usuario.** Un
+  usuario recién dado de alta **no tiene acceso a ningún mundo** hasta que un
+  administrador se lo concede.
+- Un usuario solo ve en el listado, y solo puede entrar en, los mundos a los que
+  tiene acceso.
+- **Un robot por usuario en cada mundo.** Un usuario puede tener a la vez un
+  robot en cada uno de los mundos a los que tiene acceso, pero nunca dos en el
+  mismo mundo. Si intenta entrar de nuevo en un mundo donde ya tiene robot,
+  recupera ese robot (o entra desde cero si había hecho una salida voluntaria).
+- Cada robot se identifica por el par **(mundo, usuario)**. Por eso las
+  peticiones de la API indican siempre el mundo, por ejemplo con rutas como
+  `/mundos/<uuid>/…`.
+- Si un administrador **retira el acceso** a un mundo donde el usuario tiene un
+  robot, el robot sale del mundo en ese momento.
+
 ### Tokens de API
 
-Cada usuario genera sus tokens desde la página web. Hay dos tipos:
+Cada usuario genera sus tokens desde la página web. **Los tokens valen para
+todos los mundos** a los que el usuario tiene acceso: con un mismo token se
+controla, o se observa, su robot en cada uno de ellos. Hay dos tipos:
 
 | | Lectura-escritura (`rw`) | Solo lectura (`ro`) |
 |---|---|---|
@@ -243,7 +264,8 @@ comunican por un **bus de mensajes**.
   balanceador si hay muchos clientes.
 - **Base de datos.** Guarda los **usuarios**, sus credenciales y su **rol**
   (administrador o usuario), los **tokens de API** (solo su *hash*), el
-  **registro de mundos** y el historial de carreras. Solo la usa la
+  **registro de mundos**, **a qué mundos tiene acceso cada usuario** y el
+  historial de carreras. Solo la usa la
   pasarela y queda **fuera del camino de los datos en tiempo real**: los
   sensores y los actuadores nunca pasan por ella.
 - **Motor de simulación.** Solo hace cálculo: avanza la física, muestrea los
@@ -297,8 +319,13 @@ pasarela, para no añadir latencia. Para autenticarlo se usa el mecanismo de
 
 Así la base de datos es la única fuente de verdad, dar de alta o revocar un
 mundo no obliga a reconfigurar ni a reiniciar NATS, y los datos en tiempo real
-siguen yendo directos por el bus. Si los motores corren en otras máquinas, NATS
-debe exponerse con TLS.
+siguen yendo directos por el bus.
+
+**NATS nunca se expone fuera del clúster.** Los motores de simulación corren en
+distintas máquinas de un clúster Docker Swarm o Kubernetes y llegan a NATS solo
+por la **red interna** del clúster. Para proteger ese tráfico entre máquinas se
+recomienda cifrar la red interna (red *overlay* cifrada en Swarm, o políticas
+de red y cifrado del CNI en Kubernetes) o activar TLS en NATS.
 
 #### Servidores activos
 
@@ -409,8 +436,11 @@ con cada componente en su propio contenedor (ver
 1. **Docker local:** un contenedor de pasarela, uno de simulación por mundo,
    el bus NATS y la base de datos, todos en la misma máquina. Es el despliegue
    de referencia.
-2. **Varias máquinas:** varias réplicas de la pasarela detrás de un balanceador
-   y motores de simulación repartidos entre máquinas.
+2. **Clúster (Docker Swarm o Kubernetes):** varias réplicas de la pasarela
+   detrás de un balanceador, y motores de simulación repartidos entre las
+   máquinas del clúster. Todos se comunican por la red interna; desde fuera
+   solo es accesible la pasarela. Los relojes de todas las máquinas deben estar
+   sincronizados por NTP (ver [Relojes y marcas de tiempo](#relojes-y-marcas-de-tiempo)).
 
 La clave es definir la interfaz entre la pasarela y la simulación como
 **mensajes**, sin depender del transporte. Así las pruebas automáticas pueden
@@ -703,6 +733,8 @@ capas:                           # de abajo arriba
 Cuando un cliente se conecta con su robot (con un token de lectura-escritura),
 este **entra al mundo** así:
 
+- El usuario debe **tener acceso a ese mundo** y **no tener ya otro robot en
+  él**. Si ya lo tiene, recupera ese robot en lugar de crear uno nuevo.
 - Solo puede usar un modelo de robot **permitido en ese mundo**.
 - Solo entra si queda sitio: si ya está el **número máximo de robots**
   configurado, el servidor rechaza la entrada con un error que lo indica, y el
@@ -756,8 +788,10 @@ caduque el robot anterior.
 
 ### Visores con token de solo lectura
 
-Un visor (por ejemplo, el cliente web de un tercero) sigue a un robot aunque
-este no esté en el mundo:
+Un visor (por ejemplo, el cliente web de un tercero) indica el mundo que quiere
+ver. Como el token vale para todos los mundos del usuario, con el mismo token de
+solo lectura se puede seguir su robot en cualquiera de ellos. El visor sigue al
+robot aunque este no esté en el mundo:
 
 - Mientras el robot no está, el visor muestra **"El robot no está actualmente en
   el mundo"**.
@@ -807,7 +841,9 @@ claridad en el punto de intersección.
    Desde ese momento aparece en el listado de servidores activos.
 2. El usuario genera en la página web su token de API de lectura-escritura. Su
    cliente de control se conecta con él (como `Bearer` o como cookie), elige un
-   mundo activo y un modelo de robot permitido en ese mundo.
+   mundo activo al que un administrador le haya dado acceso y un modelo de robot
+   permitido en ese mundo. El mismo token le sirve para tener otro robot en
+   cada uno de sus demás mundos, pero solo uno por mundo.
 3. Si no se ha alcanzado el número máximo de robots, el servidor coloca el robot
    en un punto libre y aleatorio del mapa, orientado hacia el centro. Si se ha
    alcanzado, rechaza la entrada.

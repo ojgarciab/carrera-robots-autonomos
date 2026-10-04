@@ -142,7 +142,7 @@ services:
     #   - "127.0.0.1:8222:8222"
 
   # Base de datos: usuarios, roles, tokens de API (solo su hash), registro de
-  # mundos e historial de carreras. No está en el camino de los datos en tiempo
+  # mundos, acceso de cada usuario a los mundos e historial de carreras. No está en el camino de los datos en tiempo
   # real y solo la usa la pasarela.
   bd:
     image: postgres:17-alpine

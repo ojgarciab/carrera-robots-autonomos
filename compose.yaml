@@ -47,9 +47,9 @@ services:
       MUNDO_ID: ovalo
       CIRCUITO: ovalo
       # Número máximo de robots simultáneos en este mundo.
-      MAX_ROBOTS: ${MAX_ROBOTS:-8}
+      MAX_ROBOTS: ${MAX_ROBOTS:-4}
       # Frecuencia del paso fijo de la física.
-      PASO_FISICA_HZ: ${PASO_FISICA_HZ:-200}
+      PASO_FISICA_HZ: ${PASO_FISICA_HZ:-60}
       # Frecuencia de publicación del estado del mundo para la vista de administrador.
       ESTADO_MUNDO_HZ: ${ESTADO_MUNDO_HZ:-30}
       # Temporizadores del ciclo de vida.

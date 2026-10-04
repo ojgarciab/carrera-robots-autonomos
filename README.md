@@ -227,9 +227,13 @@ son preferibles alternativas más ligeras:
 Los sensores infrarrojos se muestrean cada 100 ms. Por tanto, lo importante es
 que el tiempo añadido por el servidor sea pequeño comparado con ese periodo:
 
-- **Paso de física:** el motor avanza a paso fijo (por ejemplo, 200 Hz, es decir
-  5 ms) independientemente de la frecuencia de los sensores. Una consigna de
-  motor se aplica como mucho un paso después de llegar.
+- **Paso de física:** el motor avanza a paso fijo, por defecto a **60 Hz**
+  (unos 16,7 ms por paso), independientemente de la frecuencia de los sensores.
+  Una consigna de motor se aplica como mucho un paso después de llegar, es decir,
+  con menos de 17 ms de retraso. Además, 60 Hz encaja con los sensores: cada
+  muestra de los infrarrojos (100 ms) cae exactamente cada 6 pasos, y el estado
+  del mundo para el administrador (30 Hz) cada 2 pasos. Si la máquina lo
+  permite, se puede subir la frecuencia para ganar precisión.
 - **Bus de mensajes:** con NATS o ZeroMQ en la misma máquina o red local, cada
   salto añade típicamente bastante menos de 1 ms. Con RabbitMQ bien configurado
   es algo más, pero sigue siendo pequeño frente a 100 ms.
@@ -268,7 +272,11 @@ Parámetros principales del servidor:
 
 | Parámetro | Descripción |
 |-----------|-------------|
-| Número máximo de robots | Límite de robots simultáneos en el mundo. Cada robot consume CPU (física, sensores y telemetría), así que este valor debe ajustarse a la capacidad de la máquina. Si se alcanza, las nuevas entradas se rechazan. |
+| Número máximo de robots | Límite de robots simultáneos en el mundo; **4 por defecto**. Cada robot consume CPU (física, sensores y telemetría), así que este valor debe ajustarse a la capacidad de la máquina. Si se alcanza, las nuevas entradas se rechazan. |
+| Frecuencia de la física | Pasos de simulación por segundo; **60 Hz por defecto**. Cuanto más alta, más precisa es la simulación y más CPU consume. |
+
+Los valores por defecto (60 Hz y 4 robots) están pensados para **no sobrecargar
+la máquina**. Se pueden subir si hay CPU de sobra.
 
 En Docker estos parámetros se pasan como variables de entorno; la lista
 completa está en [Despliegue local con Docker](#despliegue-local-con-docker).
@@ -330,8 +338,8 @@ plantilla.
 | `PASARELA_PUERTO` | `8080` | `pasarela` | Puerto de la máquina anfitriona donde se publica la pasarela. |
 | `LONG_POLLING_TIMEOUT_MS` | `1000` | `pasarela` | Espera máxima de una petición de long polling. |
 | `SESION_TTL` | `12h` | `pasarela` | Duración de los tokens de sesión. |
-| `MAX_ROBOTS` | `8` | simulación | Número máximo de robots simultáneos en cada mundo. |
-| `PASO_FISICA_HZ` | `200` | simulación | Frecuencia del paso fijo de la física. |
+| `MAX_ROBOTS` | `4` | simulación | Número máximo de robots simultáneos en cada mundo. |
+| `PASO_FISICA_HZ` | `60` | simulación | Frecuencia del paso fijo de la física. |
 | `ESTADO_MUNDO_HZ` | `30` | simulación | Frecuencia con la que se publica el estado del mundo para la vista de administrador. |
 | `PARADA_MOTORES_S` | `5` | simulación | Segundos sin instrucciones antes de desconectar los motores (polling). |
 | `SALIDA_MUNDO_S` | `300` | simulación | Segundos sin actividad antes de que el robot salga del mundo. |

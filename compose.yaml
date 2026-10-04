@@ -1,14 +1,15 @@
 # Despliegue de referencia de la parte de servidor en Docker local.
 #
-# Incluye la pasarela de API, los motores de simulación (mundos), el bus de
-# mensajes y la base de datos. Los clientes no forman parte del despliegue: el
-# cliente web es un navegador que se conecta a la pasarela y los clientes de
-# control corren de forma independiente.
+# Incluye la pasarela de API, los motores de simulación (mundos), la interfaz
+# de gestión, el visor web (ficheros estáticos), el bus de mensajes y la base de
+# datos. Cada componente se construye desde su repositorio (ver la sección
+# "Repositorios" del README). Los clientes de control no forman parte del
+# despliegue: corren de forma independiente.
 #
 # Uso:
 #   cp .env.example .env              # y ajustar los valores
-#   docker compose up -d --build      # bus, base de datos y pasarela
-#   # Dar de alta el mundo en la web y copiar su UUID y testigo en .env
+#   docker compose up -d --build      # bus, base de datos, pasarela, gestión y visor
+#   # Dar de alta el mundo en la interfaz de gestión y copiar su UUID y testigo en .env
 #   docker compose --profile mundos up -d --build
 #
 # Ver la sección "Despliegue local con Docker" del README.
@@ -16,11 +17,10 @@
 name: carrera-robots
 
 services:
-  # Pasarela de API: tokens de API, WebSocket, REST, ping, cliente web, registro
-  # de mundos y autenticación delegada (auth callout) de los motores en NATS.
-  # Es el único servicio expuesto al exterior.
+  # Pasarela de API: WebSocket, REST, ping, validación de tokens de API, CORS y
+  # autenticación delegada (auth callout) de los motores en NATS.
   pasarela:
-    build: ./pasarela
+    build: https://github.com/ghCreaR/robot-2d-pasarela.git#main
     restart: unless-stopped
     ports:
       - "${PASARELA_PUERTO:-8080}:8080"
@@ -36,11 +36,11 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-carrera}:${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}@bd:5432/${POSTGRES_DB:-carrera}
       # Espera máxima de una petición de long polling antes de responder sin dato nuevo.
       LONG_POLLING_TIMEOUT_MS: ${LONG_POLLING_TIMEOUT_MS:-1000}
-      # Duración de la sesión de la página web (no afecta a los tokens de API).
-      SESION_WEB_TTL: ${SESION_WEB_TTL:-12h}
-      # Caducidad máxima de los tokens de API de los usuarios.
-      TOKEN_API_MAX_DIAS: ${TOKEN_API_MAX_DIAS:-7}
-      # Definiciones de los robots: la pasarela sirve las capas SVG al cliente
+      # Orígenes (separados por comas) desde los que se admiten peticiones REST
+      # con CORS y conexiones WebSocket de navegador. Por defecto, el visor web
+      # del despliegue local.
+      CORS_ORIGENES: ${CORS_ORIGENES:-http://localhost:8081}
+      # Definiciones de los robots: la pasarela sirve las capas SVG al visor
       # web y entrega a cada mundo las definiciones de sus robots permitidos.
       ROBOTS_DIR: /robots
     volumes:
@@ -53,13 +53,50 @@ services:
     networks:
       - interna
 
+  # Interfaz de gestión: usuarios, mundos, accesos y tokens de API. Es la dueña
+  # del esquema de la base de datos. No se conecta al bus.
+  interfaz:
+    build: https://github.com/ghCreaR/robot-2d-interfaz-web.git#main
+    restart: unless-stopped
+    ports:
+      - "${INTERFAZ_PUERTO:-8082}:8080"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-carrera}:${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}@bd:5432/${POSTGRES_DB:-carrera}
+      # Duración de la sesión de la interfaz (no afecta a los tokens de API).
+      SESION_WEB_TTL: ${SESION_WEB_TTL:-12h}
+      # Caducidad máxima de los tokens de API de los usuarios.
+      TOKEN_API_MAX_DIAS: ${TOKEN_API_MAX_DIAS:-7}
+      # Definiciones de los robots, para elegir los permitidos en cada mundo.
+      ROBOTS_DIR: /robots
+    volumes:
+      - ./robots:/robots:ro
+    depends_on:
+      bd:
+        condition: service_healthy
+    networks:
+      - interna
+
+  # Visor web: solo ficheros estáticos servidos por un servidor web. El
+  # navegador se conecta directamente a la pasarela (otro origen), por eso la
+  # pasarela debe incluir este origen en CORS_ORIGENES.
+  visor:
+    build: https://github.com/ghCreaR/robot-2d-visor-web.git#main
+    restart: unless-stopped
+    ports:
+      - "${VISOR_PUERTO:-8081}:8080"
+    environment:
+      # Dirección de la pasarela tal y como la ve el navegador del usuario.
+      PASARELA_URL: ${PASARELA_URL_PUBLICA:-http://localhost:8080}
+    networks:
+      - interna
+
   # Motor de simulación: física 2D, sensores, actuadores y ciclo de vida de
   # los robots. Hay un servicio por mundo y no expone puertos: solo habla con
   # el bus de mensajes. Se identifica con el UUID y el testigo que genera un
-  # administrador al dar de alta el mundo en la página web, por eso está en el
-  # perfil "mundos" y se arranca después de darlo de alta.
+  # administrador al dar de alta el mundo en la interfaz de gestión, por eso
+  # está en el perfil "mundos" y se arranca después de darlo de alta.
   simulacion-ovalo:
-    build: ./simulacion
+    build: https://github.com/ghCreaR/robot-2d-motor-fisicas.git#main
     profiles: ["mundos"]
     restart: unless-stopped
     environment: &entorno-simulacion
@@ -99,7 +136,7 @@ services:
   # Segundo mundo con el circuito en 8. Descomentar para tener los dos a la vez
   # y darlo de alta en la web como un mundo aparte, con su propio testigo.
   # simulacion-ocho:
-  #   build: ./simulacion
+  #   build: https://github.com/ghCreaR/robot-2d-motor-fisicas.git#main
   #   profiles: ["mundos"]
   #   restart: unless-stopped
   #   environment:

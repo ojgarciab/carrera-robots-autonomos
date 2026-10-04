@@ -12,6 +12,19 @@ sensores, decidir y mover los actuadores. Todo lo demás (física, sensores, cir
 y visualización) lo pone el marco de trabajo. Así se pueden comparar algoritmos
 distintos sobre el mismo robot y el mismo circuito en igualdad de condiciones.
 
+## Repositorios
+
+El código de cada componente vive en su propio repositorio:
+
+| Repositorio | Componente |
+|-------------|------------|
+| [`carrera-robots-autonomos`](https://github.com/ojgarciab/carrera-robots-autonomos) (este) | Repositorio común: documentación, contratos entre componentes, definiciones de robots y circuitos, despliegue de referencia (`compose.yaml`) y configuración de NATS. |
+| [`robot-2d-pasarela`](https://github.com/ghCreaR/robot-2d-pasarela) | [Pasarela de API](#reparto-de-responsabilidades) en tiempo real: REST, WebSocket, validación de tokens y autenticación de los motores en NATS. |
+| [`robot-2d-motor-fisicas`](https://github.com/ghCreaR/robot-2d-motor-fisicas) | [Motor de simulación](#reparto-de-responsabilidades) de cada mundo: física 2D, sensores y actuadores. |
+| [`robot-2d-interfaz-web`](https://github.com/ghCreaR/robot-2d-interfaz-web) | [Interfaz de gestión](#interfaz-de-gestión): usuarios, mundos, accesos y tokens de API. Es la dueña del esquema de la base de datos. |
+| [`robot-2d-visor-web`](https://github.com/ghCreaR/robot-2d-visor-web) | [Visor web](#visor-web): ficheros estáticos para ver la carrera y los sensores de los robots. |
+| [`robot-2d-cliente-referencia-python`](https://github.com/ghCreaR/robot-2d-cliente-referencia-python) | Cliente de control de referencia en Python para los sigue líneas. |
+
 ## Arquitectura general
 
 El sistema sigue un modelo **cliente-servidor**:
@@ -20,11 +33,11 @@ El sistema sigue un modelo **cliente-servidor**:
                         ┌──────────────────────────────┐
                         │           SERVIDOR           │
   ┌─────────────────┐   │  - Simulación física (2D)    │   ┌──────────────────┐
-  │ Cliente control │◄──┤  - Simulación de sensores    ├──►│ Cliente web      │
+  │ Cliente control │◄──┤  - Simulación de sensores    ├──►│ Visor web        │
   │ (algoritmo)     ├──►│  - Circuitos                 │   │ (administrador)  │
   └─────────────────┘   │  - Autenticación y usuarios  │   └──────────────────┘
   ┌─────────────────┐   │  - API WebSocket y REST      │   ┌──────────────────┐
-  │ Cliente control │◄─►│                              ├──►│ Cliente web      │
+  │ Cliente control │◄─►│                              ├──►│ Visor web        │
   └─────────────────┘   └──────────────────────────────┘   │ (usuario)        │
                                                            └──────────────────┘
 
@@ -56,7 +69,7 @@ El sistema sigue un modelo **cliente-servidor**:
 ### Clientes de control
 
 - Se conectan a través de la [API de cliente](#api-de-cliente) con un **token
-  de API de lectura-escritura** que el usuario genera en la página web (ver
+  de API de lectura-escritura** que el usuario genera en la interfaz de gestión (ver
   [Tokens de API](#tokens-de-api)).
 - **Eligen el mundo**, de entre los servidores activos, y **qué modelo de robot
   van a usar**, de entre los permitidos en ese mundo.
@@ -67,42 +80,55 @@ El sistema sigue un modelo **cliente-servidor**:
 - El cliente no tiene acceso al estado interno de la simulación: solo "ve" lo que
   ven los sensores de su robot, igual que un robot real.
 
-### Cliente web
+### Visor web
 
-Se conecta al servidor desde el navegador (la comunicación puede hacerse con
-**WebSockets**) y **no puede controlar** ningún robot: su conexión es de solo
-lectura. Tiene **dos niveles de acceso**:
+El visor web ([`robot-2d-visor-web`](https://github.com/ghCreaR/robot-2d-visor-web))
+son **solo ficheros estáticos** (HTML, CSS y JavaScript): se pueden servir desde
+cualquier servidor web y se conectan desde el navegador a la pasarela, que puede
+estar en **otro origen** (ver [CORS y orígenes permitidos](#cors-y-orígenes-permitidos)).
+La dirección de la pasarela es configurable.
 
-| Nivel | Qué puede ver | Uso típico |
-|-------|---------------|------------|
-| **Administrador** | El circuito y **todos** los robots con sus **coordenadas y orientación exactas**. Sobre cada robot se muestra una **etiqueta con el nombre del usuario** al que pertenece. | Proyectar la prueba o la carrera en televisiones o pantallas grandes. |
-| **Usuario** | **Solo los valores de los sensores de su propio robot**. No ve la posición real ni los robots de los demás. | Depurar su algoritmo viendo lo mismo que "ve" su robot. |
+Se conecta por **WebSocket** y **no puede controlar** ningún robot: su conexión
+es de solo lectura. Tiene **dos vistas**:
+
+| Vista | Qué muestra | Uso típico |
+|-------|-------------|------------|
+| **Administrador** | El circuito y **todos** los robots con sus **coordenadas y orientación exactas**, dibujados con sus [capas SVG](robots/README.md#capas-svg). Sobre cada robot se muestra una **etiqueta con el nombre del usuario** al que pertenece. | Proyectar la prueba o la carrera en televisiones o pantallas grandes. |
+| **Usuario** | **Solo los valores de los sensores de un robot**. No muestra la posición real ni los robots de los demás. | Que el dueño depure su algoritmo viendo lo mismo que "ve" su robot, o que terceros sigan ese robot con el token de solo lectura. |
 
 Así se mantiene la regla de que un participante solo dispone de la información
 que le dan los sensores de su robot, mientras que el administrador tiene la
 vista completa de la carrera.
 
-Además, la página web permite:
-
-- **Ver el listado de servidores activos**: los mundos registrados que están
-  funcionando en ese momento **y a los que el usuario tiene acceso**, con su
-  nombre, los robots permitidos y cuántos huecos libres quedan.
-- **Generar y revocar los tokens de API** del usuario (ver
-  [Tokens de API](#tokens-de-api)).
-- A los **administradores**, **dar de alta mundos** y generar su testigo de
-  acceso (ver [Registro de mundos](#registro-de-mundos)), y **gestionar a qué
-  mundos tiene acceso cada usuario** (ver
-  [Acceso de los usuarios a los mundos](#acceso-de-los-usuarios-a-los-mundos)).
-
-Para entrar en la página web el usuario inicia sesión con su cuenta. Esa sesión
-solo sirve para la web; los clientes de control y los visores usan tokens de
-API.
+El visor se autentica con un **token de API de solo lectura**. La vista de
+administrador solo está disponible si el token pertenece a un usuario con **rol
+de administrador**.
 
 **Robot fuera del mundo.** Si el robot que se está viendo no está en el mundo,
 por ejemplo porque su dueño se desconectó hace más de 5 minutos o salió de forma
-voluntaria, el cliente web muestra el mensaje **"El robot no está actualmente en
-el mundo"**. No da la conexión por perdida: en cuanto el robot vuelve a entrar,
+voluntaria, el visor muestra el mensaje **"El robot no está actualmente en el
+mundo"**. No da la conexión por perdida: en cuanto el robot vuelve a entrar,
 recupera automáticamente la comunicación y sigue mostrando sus sensores.
+
+### Interfaz de gestión
+
+La interfaz de gestión
+([`robot-2d-interfaz-web`](https://github.com/ghCreaR/robot-2d-interfaz-web)) es
+la aplicación web donde se administra el sistema. El usuario **inicia sesión con
+su cuenta**; esa sesión solo sirve para esta aplicación, porque los clientes de
+control y los visores usan tokens de API. Permite:
+
+- **Ver el listado de mundos** a los que el usuario tiene acceso, con su
+  nombre, los robots permitidos y si están **activos** en ese momento.
+- **Generar y revocar los tokens de API** del usuario (ver
+  [Tokens de API](#tokens-de-api)).
+- A los **administradores**: **dar de alta usuarios y mundos**, generar el
+  testigo de acceso de cada mundo (ver [Registro de mundos](#registro-de-mundos))
+  y **gestionar a qué mundos tiene acceso cada usuario** (ver
+  [Acceso de los usuarios a los mundos](#acceso-de-los-usuarios-a-los-mundos)).
+
+Es la **dueña del esquema de la base de datos** (y de sus migraciones). No
+participa en los datos en tiempo real.
 
 ## API de cliente
 
@@ -110,8 +136,8 @@ Los clientes de control y los visores usan una API autenticada con **tokens de
 API**:
 
 1. **Autenticación.** Cada petición lleva un token de API que el usuario ha
-   generado antes en la página web. No hay endpoint de inicio de sesión en la
-   API.
+   generado antes en la interfaz de gestión. No hay endpoint de inicio de
+   sesión en la API.
 2. **Datos en tiempo real.** Con ese token el cliente recibe la telemetría y,
    si el token es de lectura-escritura, envía los valores de los actuadores. Hay
    dos medios, a elección del cliente:
@@ -128,7 +154,9 @@ API**:
   usuario recién dado de alta **no tiene acceso a ningún mundo** hasta que un
   administrador se lo concede.
 - Un usuario solo ve en el listado, y solo puede entrar en, los mundos a los que
-  tiene acceso.
+  tiene acceso. La pasarela ofrece ese listado, con los mundos activos, en un
+  endpoint de la API (`GET /mundos`), para que los clientes de control y el
+  visor puedan elegir mundo.
 - **Un robot por usuario en cada mundo.** Un usuario puede tener a la vez un
   robot en cada uno de los mundos a los que tiene acceso, pero nunca dos en el
   mismo mundo. Si intenta entrar de nuevo en un mundo donde ya tiene robot,
@@ -141,7 +169,7 @@ API**:
 
 ### Tokens de API
 
-Cada usuario genera sus tokens desde la página web. **Los tokens valen para
+Cada usuario genera sus tokens desde la interfaz de gestión. **Los tokens valen para
 todos los mundos** a los que el usuario tiene acceso: con un mismo token se
 controla, o se observa, su robot en cada uno de ellos. Hay dos tipos:
 
@@ -167,20 +195,50 @@ Reglas:
   publican por error. Se prefieren a los JWT porque un token revocado debe dejar
   de funcionar al instante.
 - La pasarela guarda en memoria durante unos segundos los tokens ya validados,
-  para no consultar la base de datos en cada petición de polling. Cuando se
-  revoca un token, lo avisa por el bus para que todas las réplicas lo olviden.
+  para no consultar la base de datos en cada petición de polling. Cuando la
+  interfaz de gestión revoca un token, lo avisa con una notificación de
+  PostgreSQL (`NOTIFY`), y todas las réplicas de la pasarela, que escuchan con
+  `LISTEN`, lo olvidan al instante.
 
-El token se envía de una de estas dos formas, a elección del cliente:
+El token se envía de una de estas formas, a elección del cliente:
 
 - **Cabecera `Authorization: Bearer <token>`.** Es lo natural para los clientes
-  de control.
-- **Cookie.** Útil para el visor web. La cookie es `HttpOnly`, `Secure` y
-  `SameSite=Strict`, y la pasarela comprueba el `Origin` al abrir un WebSocket
-  para evitar que otra web use la cookie del usuario.
+  de control y para las peticiones REST del visor web.
+- **Primer mensaje del WebSocket.** Los navegadores no permiten poner la
+  cabecera `Authorization` al abrir un WebSocket, así que el visor web envía el
+  token en el primer mensaje de la conexión. La pasarela no acepta ningún otro
+  mensaje hasta recibirlo y cierra la conexión si no llega en unos segundos.
+- **Cookie.** Solo cuando el cliente y la pasarela comparten sitio (mismo
+  dominio). La cookie es `HttpOnly`, `Secure` y `SameSite=Strict`, por lo que
+  **no sirve para un visor alojado en otro dominio**: en ese caso se usan las
+  dos formas anteriores.
 
-Los navegadores no permiten poner la cabecera `Authorization` al abrir un
-WebSocket. Por eso, desde un navegador el token va en la cookie o en el primer
-mensaje de la conexión, **nunca en la URL**, porque acabaría en los registros.
+El token **nunca va en la URL**, porque acabaría en los registros.
+
+### CORS y orígenes permitidos
+
+El visor web son ficheros estáticos que pueden estar alojados en un origen
+distinto al de la pasarela (otro dominio o puerto). La pasarela tiene una
+**lista de orígenes permitidos** configurable (`CORS_ORIGENES`) y la aplica así:
+
+- **Peticiones REST** (por ejemplo, `GET /mundos` o el polling de sensores):
+  - Responde a las peticiones previas (*preflight*) `OPTIONS`.
+  - Devuelve `Access-Control-Allow-Origin` con el **origen concreto** que hizo
+    la petición, si está en la lista, nunca `*`, y añade `Vary: Origin`.
+  - `Access-Control-Allow-Methods: GET, POST, OPTIONS`.
+  - `Access-Control-Allow-Headers: Authorization, Content-Type`.
+  - `Access-Control-Max-Age` para que el navegador recuerde el resultado de la
+    petición previa y no la repita en cada consulta.
+  - No envía `Access-Control-Allow-Credentials`, porque desde otro origen se
+    usa el token `Bearer` y no cookies.
+- **WebSocket:** el navegador no aplica CORS a los WebSocket, así que la
+  pasarela **comprueba ella misma la cabecera `Origin`** al abrir la conexión y
+  la rechaza si no está en la lista. Los clientes que no son navegadores, como
+  los clientes de control, no envían `Origin` y se aceptan; para ellos la
+  protección es el token.
+
+Los ficheros SVG de los robots que sirve la pasarela llevan las mismas
+cabeceras, para que el visor pueda cargarlos desde otro origen.
 
 ### Lectura de sensores por polling
 
@@ -230,7 +288,7 @@ escale y la latencia sea baja, se propone separarlo en dos componentes que se
 comunican por un **bus de mensajes**.
 
 ```
-  clientes de control                        clientes web
+  clientes de control                        visor web
   (WebSocket / REST)                         (admin / usuario)
           │                                         │
           ▼                                         ▼
@@ -240,8 +298,8 @@ comunican por un **bus de mensajes**.
   │  - Conexiones WebSocket y endpoints REST                 │
   │  - Caché del último valor de cada sensor (polling)       │
   │  - Long polling, ping y filtrado por nivel de acceso     │
-  │  - Sirve los ficheros del cliente web                    │◄──► BASE DE
-  └───────────────┬─────────────────────────▲────────────────┘     DATOS
+  │  - Capas SVG de los robots, CORS                         │◄──► BASE DE ◄──► INTERFAZ
+  └───────────────┬─────────────────────────▲────────────────┘     DATOS        DE GESTIÓN
      actuadores,  │                         │  sensores,
      actividad,   │      BUS DE MENSAJES    │  estado del mundo,
      altas/bajas  ▼   (NATS / RabbitMQ …)   │  eventos
@@ -265,9 +323,18 @@ comunican por un **bus de mensajes**.
 - **Base de datos.** Guarda los **usuarios**, sus credenciales y su **rol**
   (administrador o usuario), los **tokens de API** (solo su *hash*), el
   **registro de mundos**, **a qué mundos tiene acceso cada usuario** y el
-  historial de carreras. Solo la usa la
-  pasarela y queda **fuera del camino de los datos en tiempo real**: los
-  sensores y los actuadores nunca pasan por ella.
+  historial de carreras. La usan dos componentes:
+  - La **interfaz de gestión**, que es la dueña del esquema y la que da de alta,
+    modifica y revoca.
+  - La **pasarela**, que la consulta para validar tokens, accesos y testigos, y
+    solo escribe en ella la hora del último latido de cada mundo.
+
+  Los cambios que afectan a la pasarela (un token revocado o un acceso
+  retirado) se avisan con `NOTIFY` de PostgreSQL. La base de datos queda **fuera
+  del camino de los datos en tiempo real**: los sensores y los actuadores nunca
+  pasan por ella.
+- **Interfaz de gestión.** Aplicación web de administración (usuarios, mundos,
+  accesos y tokens). No se conecta al bus ni a los motores.
 - **Motor de simulación.** Solo hace cálculo: avanza la física, muestrea los
   sensores y aplica los actuadores. No sabe nada de HTTP ni de WebSockets, por
   lo que su bucle no se ve afectado por clientes lentos o por picos de
@@ -280,7 +347,7 @@ comunican por un **bus de mensajes**.
 ### Registro de mundos
 
 Cada motor de simulación es un **mundo** que los **administradores dan de alta**
-desde la página web. La base de datos guarda de cada mundo:
+desde la interfaz de gestión. La base de datos guarda de cada mundo:
 
 | Campo | Descripción |
 |-------|-------------|
@@ -340,9 +407,15 @@ equipo llegue a tener acceso a la VLAN.
 Estar **registrado** (dato fijo en la base de datos) no es lo mismo que estar
 **activo** (en marcha ahora mismo). Cada motor publica un **latido** cada pocos
 segundos en `mundo.<uuid>.latido`, con su circuito, los robots que hay y el
-máximo admitido. La pasarela construye con esos latidos el **listado de
-servidores activos** de la página web. Un mundo sin latidos durante un tiempo se
-da por parado.
+máximo admitido. Con esos latidos la pasarela:
+
+- Ofrece el **listado de mundos activos** en su API (`GET /mundos`), para los
+  clientes de control y el visor.
+- Guarda en la base de datos la **hora del último latido** de cada mundo, como
+  mucho cada pocos segundos, para que la interfaz de gestión muestre si un mundo
+  está activo sin tener que conectarse al bus.
+
+Un mundo sin latidos durante un tiempo se da por parado.
 
 Al conectarse, el motor pide a la pasarela la **configuración de su mundo**: los
 robots permitidos y sus definiciones YAML. Así no necesita tener una copia del
@@ -479,35 +552,45 @@ El repositorio incluye un fichero de referencia,
 [`compose.yaml`](compose.yaml), para levantar **toda la parte de servidor** en
 Docker local.
 
-**Los clientes no forman parte del despliegue:**
+Cada componente se **construye directamente desde su repositorio** (ver
+[Repositorios](#repositorios)), por lo que cada uno debe incluir su
+`Dockerfile`.
 
-- El **cliente web** es siempre un navegador. La pasarela sirve sus ficheros
-  y el navegador se conecta a ella.
-- Los **clientes de control** corren de forma independiente, en la máquina y el
-  lenguaje que quiera cada participante, y se conectan a la pasarela por
-  WebSocket o REST.
+**Los clientes de control no forman parte del despliegue:** corren de forma
+independiente, en la máquina y el lenguaje que quiera cada participante, y se
+conectan a la pasarela por WebSocket o REST. El visor web sí se incluye, servido
+como ficheros estáticos, para tenerlo a mano en local; en otros despliegues se
+puede alojar en cualquier servidor web.
 
 ### Servicios
 
 | Servicio | Imagen | Puertos expuestos | Función |
 |----------|--------|-------------------|---------|
-| `pasarela` | Se construye desde `./pasarela` | `8080` (configurable) | API REST, WebSocket, `ping`, tokens de API, registro de mundos, autenticación de los motores en NATS (*auth callout*) y cliente web. Es el único servicio accesible desde fuera. |
-| `simulacion-ovalo` | Se construye desde `./simulacion` | Ninguno | Motor de simulación de un mundo con el circuito en O. Está en el perfil `mundos` porque necesita el UUID y el testigo del mundo. Tiene CPU reservada para que el bucle de física no compita con el resto de servicios. |
-| `simulacion-ocho` | Se construye desde `./simulacion` | Ninguno | Segundo mundo con el circuito en 8. Viene comentado; se activa descomentándolo y dándolo de alta como otro mundo. |
+| `pasarela` | Desde `robot-2d-pasarela` | `8080` (configurable) | API REST y WebSocket, `ping`, validación de tokens, CORS, capas SVG de los robots y autenticación de los motores en NATS (*auth callout*). |
+| `interfaz` | Desde `robot-2d-interfaz-web` | `8082` (configurable) | Interfaz de gestión de usuarios, mundos, accesos y tokens. Dueña del esquema de la base de datos. |
+| `visor` | Desde `robot-2d-visor-web` | `8081` (configurable) | Servidor web de los ficheros estáticos del visor. El navegador se conecta desde ahí a la pasarela, que es otro origen. |
+| `simulacion-ovalo` | Desde `robot-2d-motor-fisicas` | Ninguno | Motor de simulación de un mundo con el circuito en O. Está en el perfil `mundos` porque necesita el UUID y el testigo del mundo. Tiene CPU reservada para que el bucle de física no compita con el resto de servicios. |
+| `simulacion-ocho` | Desde `robot-2d-motor-fisicas` | Ninguno | Segundo mundo con el circuito en 8. Viene comentado; se activa descomentándolo y dándolo de alta como otro mundo. |
 | `bus` | `nats:2-alpine` | Ninguno (`8222` para monitorización, comentado y solo en `127.0.0.1`) | Bus de mensajes sin persistencia entre la pasarela y los motores. Su configuración está en [`nats/nats.conf`](nats/nats.conf). |
 | `bd` | `postgres:17-alpine` | Ninguno | Base de datos de usuarios, roles, tokens de API, mundos e historial, con un volumen persistente (`datos-bd`). |
 
-Todos los servicios comparten una red interna. Solo la pasarela publica un
-puerto en la máquina anfitriona. El directorio [`robots/`](robots/) se monta en
-modo de solo lectura en la pasarela, que sirve las capas SVG al cliente web y
-entrega a cada mundo las definiciones de sus robots permitidos. Así se pueden
+Todos los servicios comparten una red interna. Solo la pasarela, la interfaz
+de gestión y el visor publican puertos en la máquina anfitriona; el bus y la
+base de datos no son accesibles desde fuera. El directorio [`robots/`](robots/)
+se monta en modo de solo lectura en la pasarela, que sirve las capas SVG al
+visor y entrega a cada mundo las definiciones de sus robots permitidos, y en la
+interfaz de gestión, que los ofrece al configurar los mundos. Así se pueden
 añadir o cambiar modelos sin reconstruir las imágenes. La pasarela espera a que
-el bus y la base de datos estén sanos (*healthcheck*) antes de arrancar, y los
-motores esperan al bus y a la pasarela.
+el bus y la base de datos estén sanos (*healthcheck*) antes de arrancar, la
+interfaz espera a la base de datos y los motores esperan al bus y a la pasarela.
 
-Los directorios `./pasarela` y `./simulacion`, con su `Dockerfile`, se crearán
-al implementar cada componente. Mientras no existan, se pueden levantar solo
-la infraestructura: `docker compose up -d bus bd`.
+Como el visor (`http://localhost:8081`) y la pasarela (`http://localhost:8080`)
+son orígenes distintos, `CORS_ORIGENES` incluye por defecto el origen del visor
+(ver [CORS y orígenes permitidos](#cors-y-orígenes-permitidos)). Si se cambia el
+puerto o el dominio del visor, hay que actualizar esa variable.
+
+Mientras los repositorios de los componentes no tengan su `Dockerfile`, se
+puede levantar solo la infraestructura: `docker compose up -d bus bd`.
 
 **Autenticación en NATS.** El usuario `pasarela` entra con contraseña. Cualquier
 otra conexión, como la de un motor de simulación, pasa por el *auth callout*:
@@ -528,15 +611,17 @@ vez y se guarda en `.env`.
    docker run --rm natsio/nats-box nk -gen account -pubout
    ```
 
-2. Arrancar el bus, la base de datos y la pasarela:
+2. Arrancar el bus, la base de datos, la pasarela, la interfaz de gestión y el
+   visor:
 
    ```sh
    docker compose up -d --build
    ```
 
-3. Abrir `http://localhost:8080`, entrar como administrador, **dar de alta el
-   mundo** y copiar su UUID y su testigo en `MUNDO_OVALO_UUID` y
-   `MUNDO_OVALO_TESTIGO` del `.env`.
+3. Abrir la interfaz de gestión en `http://localhost:8082`, entrar como
+   administrador, **dar de alta el mundo** y copiar su UUID y su testigo en
+   `MUNDO_OVALO_UUID` y `MUNDO_OVALO_TESTIGO` del `.env`. Dar acceso a ese mundo
+   a los usuarios que lo vayan a usar.
 
 4. Arrancar los motores de simulación:
 
@@ -544,8 +629,9 @@ vez y se guarda en `.env`.
    docker compose --profile mundos up -d --build
    ```
 
-5. Cada usuario genera sus tokens de API en la página web y conecta sus
-   clientes de control a `http://localhost:8080`.
+5. Cada usuario genera sus tokens de API en la interfaz de gestión y conecta
+   sus clientes de control a la pasarela en `http://localhost:8080`. El visor
+   está en `http://localhost:8081`.
 
 Otros comandos útiles:
 
@@ -569,9 +655,13 @@ plantilla.
 | `NATS_PASARELA_PASSWORD` | *(obligatoria)* | `bus`, `pasarela` | Contraseña del usuario `pasarela` en NATS. |
 | `NATS_CALLOUT_SEED` | *(obligatoria)* | `pasarela` | Clave privada con la que la pasarela firma las respuestas del *auth callout*. |
 | `NATS_CALLOUT_ISSUER` | *(obligatoria)* | `bus` | Clave pública correspondiente; NATS solo acepta respuestas firmadas con ella. |
-| `SESION_WEB_TTL` | `12h` | `pasarela` | Duración de la sesión en la página web. No afecta a los tokens de API. |
-| `TOKEN_API_MAX_DIAS` | `7` | `pasarela` | Caducidad máxima de los tokens de API. |
-| `MUNDO_OVALO_UUID` | *(vacía)* | simulación | UUID del mundo, obtenido al darlo de alta en la página web. |
+| `CORS_ORIGENES` | `http://localhost:8081` | `pasarela` | Orígenes permitidos para CORS y para WebSocket desde navegador, separados por comas. |
+| `INTERFAZ_PUERTO` | `8082` | `interfaz` | Puerto de la máquina anfitriona donde se publica la interfaz de gestión. |
+| `SESION_WEB_TTL` | `12h` | `interfaz` | Duración de la sesión en la interfaz de gestión. No afecta a los tokens de API. |
+| `TOKEN_API_MAX_DIAS` | `7` | `interfaz` | Caducidad máxima de los tokens de API. |
+| `VISOR_PUERTO` | `8081` | `visor` | Puerto de la máquina anfitriona donde se publica el visor. |
+| `PASARELA_URL_PUBLICA` | `http://localhost:8080` | `visor` | Dirección de la pasarela tal y como la ve el navegador; el visor la usa para conectarse. |
+| `MUNDO_OVALO_UUID` | *(vacía)* | simulación | UUID del mundo, obtenido al darlo de alta en la interfaz de gestión. |
 | `MUNDO_OVALO_TESTIGO` | *(vacía)* | simulación | Testigo de acceso del mundo, obtenido al darlo de alta. |
 | `LATIDO_S` | `2` | simulación | Segundos entre latidos que indican que el mundo está activo. |
 | `MAX_ROBOTS` | `4` | simulación | Número máximo de robots simultáneos en cada mundo. |
@@ -706,7 +796,7 @@ Los parámetros de cada robot están en un fichero YAML del directorio
   (m/s²) y la **deceleración en reposo** (m/s²) de cada motor.
 - La frecuencia de muestreo de cada sensor.
 - El **dibujo del robot** como una lista de **capas SVG** enlazadas desde el
-  YAML. El frontal web las pinta **de la primera a la última**, así que las
+  YAML. El visor web las pinta **de la primera a la última**, así que las
   partes opacas de la última capa tapan a las de debajo. Esto permite
   **compartir el cuerpo del robot** y cambiar solo la capa con la posición o la
   composición de los sensores. Los dos robots de prácticas usan el mismo
@@ -796,7 +886,7 @@ caduque el robot anterior.
 
 ### Visores con token de solo lectura
 
-Un visor (por ejemplo, el cliente web de un tercero) indica el mundo que quiere
+Un visor (por ejemplo, el visor web abierto por un tercero) indica el mundo que quiere
 ver. Como el token vale para todos los mundos del usuario, con el mismo token de
 solo lectura se puede seguir su robot en cualquiera de ellos. El visor sigue al
 robot aunque este no esté en el mundo:
@@ -843,11 +933,11 @@ claridad en el punto de intersección.
 
 ## Flujo de una sesión
 
-1. Un administrador da de alta el mundo en la página web. El motor de
+1. Un administrador da de alta el mundo en la interfaz de gestión. El motor de
    simulación arranca con su UUID y su testigo, se autentica en el bus, pide la
    configuración de su mundo, carga su circuito y empieza a publicar latidos.
    Desde ese momento aparece en el listado de servidores activos.
-2. El usuario genera en la página web su token de API de lectura-escritura. Su
+2. El usuario genera en la interfaz de gestión su token de API de lectura-escritura. Su
    cliente de control se conecta con él (como `Bearer` o como cookie), elige un
    mundo activo al que un administrador le haya dado acceso y un modelo de robot
    permitido en ese mundo. El mismo token le sirve para tener otro robot en
@@ -865,9 +955,9 @@ claridad en el punto de intersección.
    motores.
 6. El servidor avanza la simulación física y vuelve a calcular las lecturas de
    los sensores.
-7. A la vez, la pantalla de administración muestra todos los robots con su
+7. A la vez, la vista de administrador del visor web muestra todos los robots con su
    posición, su orientación y el nombre de su usuario, y cada usuario ve en su
-   cliente web los sensores de su propio robot. Con el token de solo lectura,
+   visor web los sensores de su propio robot. Con el token de solo lectura,
    terceros pueden ver también esos sensores, sin poder controlar el robot ni
    alargar su vida en el mundo.
 8. Si el cliente se desconecta, o deja de mandar instrucciones de motores durante

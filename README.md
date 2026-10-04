@@ -327,7 +327,7 @@ por la **red interna** del clúster.
 
 Para proteger el tráfico entre máquinas **se recomienda activar TLS en NATS**,
 o bien cifrar la red interna: red *overlay* cifrada en Swarm, o políticas de red
-y cifrado del CNI en Kubernetes u OpenShift (OCP).
+y cifrado del CNI en Kubernetes.
 
 Como alternativa, si la red está gestionada y es privada, se pueden conectar los
 nodos del clúster por una **VLAN dedicada**, aislada del resto de la red, de

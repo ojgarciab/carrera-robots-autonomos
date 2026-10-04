@@ -46,6 +46,10 @@ El sistema sigue un modelo **cliente-servidor**:
   paso de la simulación.
 - Carga los circuitos y coloca los robots en el mundo (ver
   [Ciclo de vida del robot en el mundo](#ciclo-de-vida-del-robot-en-el-mundo)).
+- Limita el **número máximo de robots** simultáneos con un parámetro de
+  configuración (ver [Configuración](#configuración)).
+- Internamente se divide en una pasarela de API y un motor de simulación (ver
+  [Arquitectura del servidor](#arquitectura-del-servidor)).
 
 ### Clientes de control
 
@@ -131,6 +135,134 @@ con su **marca de tiempo actual**. Así el cliente puede:
 El modo de conexión influye en cómo se detecta la desconexión del cliente (ver
 [Desconexión](#desconexión)).
 
+## Arquitectura del servidor
+
+Cada robot supone carga de proceso para el servidor: física, cálculo de los
+sensores, envío de telemetría y gestión de su conexión. Para que el servidor
+escale y la latencia sea baja, se propone separarlo en dos componentes que se
+comunican por un **bus de mensajes**.
+
+```
+  clientes de control                        clientes web
+  (WebSocket / REST)                         (admin / usuario)
+          │                                         │
+          ▼                                         ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │            PASARELA DE API (una o varias réplicas)       │
+  │  - Autenticación (token / cookie)                        │
+  │  - Conexiones WebSocket y endpoints REST                 │
+  │  - Caché del último valor de cada sensor (polling)       │
+  │  - Long polling, ping y filtrado por nivel de acceso     │
+  └───────────────┬─────────────────────────▲────────────────┘
+     actuadores,  │                         │  sensores,
+     actividad,   │      BUS DE MENSAJES    │  estado del mundo,
+     altas/bajas  ▼   (NATS / RabbitMQ …)   │  eventos
+  ┌──────────────────────────────────────────────────────────┐
+  │          MOTOR DE SIMULACIÓN (uno por mundo/circuito)    │
+  │  - Bucle de física 2D a paso fijo                        │
+  │  - Muestreo de sensores a su frecuencia (10 Hz IR)       │
+  │  - Inercia, aceleración y deceleración de los motores    │
+  │  - Ciclo de vida: entrada, temporizadores, salida        │
+  │  - Límite de número máximo de robots                     │
+  └──────────────────────────────────────────────────────────┘
+```
+
+### Reparto de responsabilidades
+
+- **Pasarela de API.** Se encarga de todo lo que depende de la red y de los
+  clientes: autenticación, conexiones, serialización, caché para el polling,
+  long polling, `ping` y control de qué puede ver cada nivel de acceso. No
+  simula nada, así que se pueden levantar varias réplicas detrás de un
+  balanceador si hay muchos clientes.
+- **Motor de simulación.** Solo hace cálculo: avanza la física, muestrea los
+  sensores y aplica los actuadores. No sabe nada de HTTP ni de WebSockets, por
+  lo que su bucle no se ve afectado por clientes lentos o por picos de
+  conexiones. Es la única fuente de verdad del mundo y también lleva los
+  temporizadores del ciclo de vida (5 s y 5 minutos) y el límite de robots,
+  para que no dependan de qué réplica de la pasarela atienda al cliente.
+
+### Mensajes entre componentes
+
+| Tema (ejemplo) | Sentido | Contenido |
+|----------------|---------|-----------|
+| `robot.<id>.sensores` | simulación → pasarela | Lecturas de sensores con su marca de tiempo. |
+| `robot.<id>.actuadores` | pasarela → simulación | Nueva consigna de los motores. |
+| `robot.<id>.actividad` | pasarela → simulación | Aviso de que el cliente sigue vivo (lectura de sensores o `ping` por polling, conexión o desconexión WebSocket). Se puede agrupar, por ejemplo uno por segundo como máximo. |
+| `mundo.<id>.control` | pasarela → simulación | Peticiones de entrada y salida de robots, con respuesta (aceptado o lleno). |
+| `mundo.<id>.estado` | simulación → pasarela | Posición y orientación exactas de todos los robots, solo para la vista de administrador. |
+| `mundo.<id>.eventos` | simulación → pasarela | Robot que entra, sale o pierde los actuadores. |
+
+Todos estos mensajes son de tipo **"vale el último"**: una lectura de sensor o
+una consigna de motor antigua no sirve de nada si ya hay una más nueva. Por eso:
+
+- **No hace falta persistencia ni confirmaciones** (*acks*). Los mensajes pueden
+  ser transitorios y en memoria.
+- Las colas deben ser **cortas** (por ejemplo, de longitud 1 o con un tiempo de
+  vida pequeño) y **descartar los mensajes viejos**, en vez de acumularlos y
+  entregarlos con retraso.
+- Conviene un **formato binario compacto** (MessagePack, Protocol Buffers o
+  FlatBuffers) en lugar de JSON entre componentes internos.
+
+### Elección del bus de mensajes
+
+RabbitMQ sirve, pero está pensado sobre todo para entregar mensajes de forma
+fiable, con persistencia, confirmaciones y enrutado complejo. Aquí no hace
+falta nada de eso y añade un salto por el broker. Para minimizar la latencia
+son preferibles alternativas más ligeras:
+
+| Opción | Ventajas | Inconvenientes |
+|--------|----------|----------------|
+| **NATS** (recomendada) | Publicación/suscripción muy ligera, latencias típicamente por debajo de 1 ms en red local, temas jerárquicos (`robot.*.sensores`), petición-respuesta incorporada. | Sin persistencia en el modo básico, que aquí no hace falta. |
+| **ZeroMQ** | Sin broker: los componentes se conectan directamente, con la menor latencia posible. | Hay que gestionar a mano el descubrimiento de servicios y las reconexiones. |
+| **Redis Pub/Sub** | Sencillo, y Redis puede servir además como caché del último valor de cada sensor. | Si un suscriptor va lento, Redis puede acabar desconectándolo. |
+| **RabbitMQ** | Muy conocido, con buenas herramientas de gestión. | Más pesado. Para no penalizar la latencia, hay que usar mensajes no persistentes, colas no durables, `auto-ack` y colas con longitud máxima. |
+
+### Presupuesto de latencia
+
+Los sensores infrarrojos se muestrean cada 100 ms. Por tanto, lo importante es
+que el tiempo añadido por el servidor sea pequeño comparado con ese periodo:
+
+- **Paso de física:** el motor avanza a paso fijo (por ejemplo, 200 Hz, es decir
+  5 ms) independientemente de la frecuencia de los sensores. Una consigna de
+  motor se aplica como mucho un paso después de llegar.
+- **Bus de mensajes:** con NATS o ZeroMQ en la misma máquina o red local, cada
+  salto añade típicamente bastante menos de 1 ms. Con RabbitMQ bien configurado
+  es algo más, pero sigue siendo pequeño frente a 100 ms.
+- **Red hasta el cliente:** suele ser la mayor parte de la latencia total y no
+  depende de la arquitectura interna.
+
+### Relojes y marcas de tiempo
+
+La **marca de tiempo de cada muestra la pone el motor de simulación** en el
+momento de tomarla. El `ping`, en cambio, lo responde la pasarela. Para que el
+cliente pueda combinar ambos valores, todas las máquinas del servidor deben
+tener los **relojes sincronizados** (NTP o, si se quiere más precisión, PTP).
+
+### Evolución por fases
+
+Para no complicar el arranque del proyecto, se puede ir por pasos:
+
+1. **Un único proceso**, con la pasarela y la simulación como módulos separados
+   que ya se comunican por mensajes, pero mediante colas en memoria. Es lo más
+   rápido y no tiene latencia de red interna.
+2. **Procesos separados** en la misma máquina, cambiando el transporte de las
+   colas en memoria por NATS (u otro bus), sin tocar la lógica de los
+   componentes.
+3. **Varias máquinas**: varias réplicas de la pasarela y un motor de simulación
+   por mundo o circuito.
+
+La clave es definir desde el principio la interfaz entre ambos componentes
+como **mensajes**, de modo que cambiar el transporte no obligue a reescribir
+nada.
+
+## Configuración
+
+Parámetros principales del servidor:
+
+| Parámetro | Descripción |
+|-----------|-------------|
+| Número máximo de robots | Límite de robots simultáneos en el mundo. Cada robot consume CPU (física, sensores y telemetría), así que este valor debe ajustarse a la capacidad de la máquina. Si se alcanza, las nuevas entradas se rechazan. |
+
 ## Motor de físicas
 
 Puede usarse **cualquier motor de físicas**, ya que **basta con que sea 2D**: los
@@ -211,6 +343,10 @@ de menos de 19 mm.
 
 Cuando un cliente se conecta con su robot, este **entra al mundo** así:
 
+- Solo entra si queda sitio: si ya está el **número máximo de robots**
+  configurado, el servidor rechaza la entrada con un error que lo indica, y el
+  cliente puede volver a intentarlo más tarde.
+
 - Aparece en un **punto aleatorio del mapa** que **no esté ocupado por otro
   robot**, respetando una **distancia de seguridad** con todos los demás.
 - Aparece **orientado hacia el centro del mapa**. De este modo, si el robot
@@ -229,12 +365,12 @@ Cómo se detecta la desconexión depende del modo de conexión:
 | Modo | Se desconectan los actuadores… | Sale del mundo… |
 |------|--------------------------------|-----------------|
 | **WebSocket** | En cuanto se cierra o se pierde la conexión WebSocket. | A los **5 minutos** sin reconectar. |
-| **Polling REST** | Tras **5 segundos** sin recibir instrucciones para los motores. | A los **5 minutos** sin ninguna petición a la API (ni instrucciones de motores ni lecturas de sensores). |
+| **Polling REST** | Tras **5 segundos** sin recibir instrucciones para los motores. | A los **5 minutos** sin ninguna petición a la API (ni instrucciones de motores, ni lecturas de sensores, ni `ping`). |
 
 Con polling, la parada de los motores y la vida del robot se cuentan por
 separado. Los motores solo se mantienen vivos con instrucciones de motores. La
-vida del robot **se extiende con cualquier petición a la API**, y basta con
-consultar los datos de sus sensores. Por eso un cliente puede tener el robot
+vida del robot **se extiende con cualquier petición a la API**: basta con
+consultar los datos de sus sensores o hacer un `ping`. Por eso un cliente puede tener el robot
 parado y seguir leyendo sus sensores sin que salga del mundo.
 
 Si el cliente vuelve antes de que pasen los 5 minutos, **recupera el control del
@@ -280,8 +416,9 @@ claridad en el punto de intersección.
 1. El servidor arranca y carga un circuito.
 2. Un cliente de control se autentica (con token o cookie) y elige un modelo de
    robot.
-3. El servidor coloca el robot en un punto libre y aleatorio del mapa, orientado
-   hacia el centro.
+3. Si no se ha alcanzado el número máximo de robots, el servidor coloca el robot
+   en un punto libre y aleatorio del mapa, orientado hacia el centro. Si se ha
+   alcanzado, rechaza la entrada.
 4. El servidor genera la telemetría a la frecuencia objetivo de cada sensor
    (10 Hz para los infrarrojos), con una marca de tiempo de precisión de
    milisegundos en cada muestra. La envía por WebSocket o la deja disponible

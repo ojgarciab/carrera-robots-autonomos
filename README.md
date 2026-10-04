@@ -197,16 +197,33 @@ comunican por un **bus de mensajes**.
 | `mundo.<id>.estado` | simulación → pasarela | Posición y orientación exactas de todos los robots, solo para la vista de administrador. |
 | `mundo.<id>.eventos` | simulación → pasarela | Robot que entra, sale o pierde los actuadores. |
 
-Todos estos mensajes son de tipo **"vale el último"**: una lectura de sensor o
-una consigna de motor antigua no sirve de nada si ya hay una más nueva. Por eso:
+Hay dos tipos de mensajes, y cada uno se trata de forma distinta.
+
+**Datos en tiempo real** (`sensores`, `actuadores`, `actividad` y `estado`).
+Son de tipo **"vale el último"**: una lectura de sensor o una consigna de motor
+antigua no sirve de nada si ya hay una más nueva. Por eso:
 
 - **No hace falta persistencia ni confirmaciones** (*acks*). Los mensajes pueden
   ser transitorios y en memoria.
 - Las colas deben ser **cortas** (por ejemplo, de longitud 1 o con un tiempo de
   vida pequeño) y **descartar los mensajes viejos**, en vez de acumularlos y
   entregarlos con retraso.
-- Conviene un **formato binario compacto** (MessagePack, Protocol Buffers o
-  FlatBuffers) en lugar de JSON entre componentes internos.
+
+**Operaciones de ciclo de vida** (`control` y `eventos`). Cambian quién controla
+cada robot, así que **no se pueden descartar**:
+
+- Se hacen como **petición-respuesta**, con un **identificador de petición**
+  para emparejar cada respuesta con su petición.
+- Son **idempotentes**: si una petición de entrada o salida se repite, por
+  ejemplo porque se perdió la respuesta, el resultado es el mismo. Un usuario
+  que reintenta entrar recupera su robot y no crea uno nuevo.
+- Si la pasarela se reinicia, pide a la simulación la lista de robots y de sus
+  dueños para volver a sincronizarse. La simulación sigue siendo la única fuente
+  de verdad y sus temporizadores paran o retiran los robots aunque se pierda
+  algún mensaje.
+
+En los dos casos conviene un **formato binario compacto** (MessagePack, Protocol
+Buffers o FlatBuffers) en lugar de JSON entre componentes internos.
 
 ### Elección del bus de mensajes
 
@@ -305,7 +322,7 @@ Docker local.
 | `pasarela` | Se construye desde `./pasarela` | `8080` (configurable) | API REST, WebSocket, `ping`, autenticación y cliente web. Es el único servicio accesible desde fuera. |
 | `simulacion-ovalo` | Se construye desde `./simulacion` | Ninguno | Motor de simulación del mundo con el circuito en O. Tiene CPU reservada para que el bucle de física no compita con el resto de servicios. |
 | `simulacion-ocho` | Se construye desde `./simulacion` | Ninguno | Segundo mundo con el circuito en 8. Viene comentado; se activa descomentándolo. |
-| `bus` | `nats:2-alpine` | Ninguno (`8222` para monitorización, comentado) | Bus de mensajes sin persistencia entre la pasarela y la simulación. |
+| `bus` | `nats:2-alpine` | Ninguno (`8222` para monitorización, comentado y solo en `127.0.0.1`) | Bus de mensajes sin persistencia entre la pasarela y la simulación. |
 | `bd` | `postgres:17-alpine` | Ninguno | Base de datos de usuarios, roles e historial, con un volumen persistente (`datos-bd`). |
 
 Todos los servicios comparten una red interna. Solo la pasarela publica un

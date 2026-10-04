@@ -106,9 +106,10 @@ services:
     networks:
       - interna
     # Para depurar: descomentar y abrir http://localhost:8222 para ver la
-    # monitorización de NATS.
+    # monitorización de NATS. Se publica solo en 127.0.0.1 porque no tiene
+    # autenticación.
     # ports:
-    #   - "8222:8222"
+    #   - "127.0.0.1:8222:8222"
 
   # Base de datos: usuarios, credenciales y roles (administrador / usuario),
   # e historial de carreras. No está en el camino de los datos en tiempo real.

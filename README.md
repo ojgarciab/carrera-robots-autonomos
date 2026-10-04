@@ -153,7 +153,8 @@ comunican por un **bus de mensajes**.
   │  - Conexiones WebSocket y endpoints REST                 │
   │  - Caché del último valor de cada sensor (polling)       │
   │  - Long polling, ping y filtrado por nivel de acceso     │
-  └───────────────┬─────────────────────────▲────────────────┘
+  │  - Sirve los ficheros del cliente web                    │◄──► BASE DE
+  └───────────────┬─────────────────────────▲────────────────┘     DATOS
      actuadores,  │                         │  sensores,
      actividad,   │      BUS DE MENSAJES    │  estado del mundo,
      altas/bajas  ▼   (NATS / RabbitMQ …)   │  eventos
@@ -174,6 +175,10 @@ comunican por un **bus de mensajes**.
   long polling, `ping` y control de qué puede ver cada nivel de acceso. No
   simula nada, así que se pueden levantar varias réplicas detrás de un
   balanceador si hay muchos clientes.
+- **Base de datos.** Guarda los **usuarios**, sus credenciales y su **rol**
+  (administrador o usuario), además del historial de carreras. Solo la usa la
+  pasarela y queda **fuera del camino de los datos en tiempo real**: los
+  sensores y los actuadores nunca pasan por ella.
 - **Motor de simulación.** Solo hace cálculo: avanza la física, muestrea los
   sensores y aplica los actuadores. No sabe nada de HTTP ni de WebSockets, por
   lo que su bucle no se ve afectado por clientes lentos o por picos de
@@ -237,23 +242,25 @@ La **marca de tiempo de cada muestra la pone el motor de simulación** en el
 momento de tomarla. El `ping`, en cambio, lo responde la pasarela. Para que el
 cliente pueda combinar ambos valores, todas las máquinas del servidor deben
 tener los **relojes sincronizados** (NTP o, si se quiere más precisión, PTP).
+En el despliegue local con Docker no hace falta hacer nada: todos los
+contenedores comparten el reloj de la máquina anfitriona.
 
 ### Evolución por fases
 
-Para no complicar el arranque del proyecto, se puede ir por pasos:
+La parte de servidor se diseña desde el principio para correr en **Docker**,
+con cada componente en su propio contenedor (ver
+[Despliegue local con Docker](#despliegue-local-con-docker)):
 
-1. **Un único proceso**, con la pasarela y la simulación como módulos separados
-   que ya se comunican por mensajes, pero mediante colas en memoria. Es lo más
-   rápido y no tiene latencia de red interna.
-2. **Procesos separados** en la misma máquina, cambiando el transporte de las
-   colas en memoria por NATS (u otro bus), sin tocar la lógica de los
-   componentes.
-3. **Varias máquinas**: varias réplicas de la pasarela y un motor de simulación
-   por mundo o circuito.
+1. **Docker local:** un contenedor de pasarela, uno de simulación por mundo,
+   el bus NATS y la base de datos, todos en la misma máquina. Es el despliegue
+   de referencia.
+2. **Varias máquinas:** varias réplicas de la pasarela detrás de un balanceador
+   y motores de simulación repartidos entre máquinas.
 
-La clave es definir desde el principio la interfaz entre ambos componentes
-como **mensajes**, de modo que cambiar el transporte no obligue a reescribir
-nada.
+La clave es definir la interfaz entre la pasarela y la simulación como
+**mensajes**, sin depender del transporte. Así las pruebas automáticas pueden
+usar un transporte en memoria, sin NATS, y cambiar de bus más adelante no obliga
+a reescribir nada.
 
 ## Configuración
 
@@ -262,6 +269,72 @@ Parámetros principales del servidor:
 | Parámetro | Descripción |
 |-----------|-------------|
 | Número máximo de robots | Límite de robots simultáneos en el mundo. Cada robot consume CPU (física, sensores y telemetría), así que este valor debe ajustarse a la capacidad de la máquina. Si se alcanza, las nuevas entradas se rechazan. |
+
+En Docker estos parámetros se pasan como variables de entorno; la lista
+completa está en [Despliegue local con Docker](#despliegue-local-con-docker).
+
+## Despliegue local con Docker
+
+El repositorio incluye un fichero de referencia,
+[`compose.yaml`](compose.yaml), para levantar **toda la parte de servidor** en
+Docker local.
+
+**Los clientes no forman parte del despliegue:**
+
+- El **cliente web** es siempre un navegador. La pasarela sirve sus ficheros
+  y el navegador se conecta a ella.
+- Los **clientes de control** corren de forma independiente, en la máquina y el
+  lenguaje que quiera cada participante, y se conectan a la pasarela por
+  WebSocket o REST.
+
+### Servicios
+
+| Servicio | Imagen | Puertos expuestos | Función |
+|----------|--------|-------------------|---------|
+| `pasarela` | Se construye desde `./pasarela` | `8080` (configurable) | API REST, WebSocket, `ping`, autenticación y cliente web. Es el único servicio accesible desde fuera. |
+| `simulacion-ovalo` | Se construye desde `./simulacion` | Ninguno | Motor de simulación del mundo con el circuito en O. Tiene CPU reservada para que el bucle de física no compita con el resto de servicios. |
+| `simulacion-ocho` | Se construye desde `./simulacion` | Ninguno | Segundo mundo con el circuito en 8. Viene comentado; se activa descomentándolo. |
+| `bus` | `nats:2-alpine` | Ninguno (`8222` para monitorización, comentado) | Bus de mensajes sin persistencia entre la pasarela y la simulación. |
+| `bd` | `postgres:17-alpine` | Ninguno | Base de datos de usuarios, roles e historial, con un volumen persistente (`datos-bd`). |
+
+Todos los servicios comparten una red interna. Solo la pasarela publica un
+puerto en la máquina anfitriona. La pasarela y la simulación esperan a que el
+bus y la base de datos estén sanos (*healthcheck*) antes de arrancar.
+
+Los directorios `./pasarela` y `./simulacion`, con su `Dockerfile`, se crearán
+al implementar cada componente. Mientras no existan, se pueden levantar solo
+la infraestructura: `docker compose up -d bus bd`.
+
+### Puesta en marcha
+
+```sh
+cp .env.example .env          # ajustar al menos POSTGRES_PASSWORD
+docker compose up -d --build  # construye y arranca todos los servicios
+docker compose logs -f        # ver los registros
+docker compose down           # parar (añadir -v para borrar la base de datos)
+```
+
+Después, abrir `http://localhost:8080` en el navegador y conectar los clientes
+de control a esa misma dirección.
+
+### Variables de entorno
+
+Se definen en el fichero `.env`; [`.env.example`](.env.example) sirve de
+plantilla.
+
+| Variable | Por defecto | Servicio | Descripción |
+|----------|-------------|----------|-------------|
+| `POSTGRES_USER` | `carrera` | `bd`, `pasarela` | Usuario de la base de datos. |
+| `POSTGRES_PASSWORD` | *(obligatoria)* | `bd`, `pasarela` | Contraseña de la base de datos. |
+| `POSTGRES_DB` | `carrera` | `bd`, `pasarela` | Nombre de la base de datos. |
+| `PASARELA_PUERTO` | `8080` | `pasarela` | Puerto de la máquina anfitriona donde se publica la pasarela. |
+| `LONG_POLLING_TIMEOUT_MS` | `1000` | `pasarela` | Espera máxima de una petición de long polling. |
+| `SESION_TTL` | `12h` | `pasarela` | Duración de los tokens de sesión. |
+| `MAX_ROBOTS` | `8` | simulación | Número máximo de robots simultáneos en cada mundo. |
+| `PASO_FISICA_HZ` | `200` | simulación | Frecuencia del paso fijo de la física. |
+| `ESTADO_MUNDO_HZ` | `30` | simulación | Frecuencia con la que se publica el estado del mundo para la vista de administrador. |
+| `PARADA_MOTORES_S` | `5` | simulación | Segundos sin instrucciones antes de desconectar los motores (polling). |
+| `SALIDA_MUNDO_S` | `300` | simulación | Segundos sin actividad antes de que el robot salga del mundo. |
 
 ## Motor de físicas
 

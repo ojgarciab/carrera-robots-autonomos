@@ -1,0 +1,125 @@
+# Despliegue de referencia de la parte de servidor en Docker local.
+#
+# Incluye la pasarela de API, el motor de simulación, el bus de mensajes y la
+# base de datos. Los clientes no forman parte del despliegue: el cliente web es
+# un navegador que se conecta a la pasarela y los clientes de control corren de
+# forma independiente.
+#
+# Uso:
+#   cp .env.example .env    # y ajustar los valores
+#   docker compose up -d --build
+#
+# Ver la sección "Despliegue local con Docker" del README.
+
+name: carrera-robots
+
+services:
+  # Pasarela de API: autenticación, WebSocket, REST, ping y cliente web.
+  # Es el único servicio expuesto al exterior.
+  pasarela:
+    build: ./pasarela
+    restart: unless-stopped
+    ports:
+      - "${PASARELA_PUERTO:-8080}:8080"
+    environment:
+      NATS_URL: nats://bus:4222
+      DATABASE_URL: postgres://${POSTGRES_USER:-carrera}:${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}@bd:5432/${POSTGRES_DB:-carrera}
+      # Espera máxima de una petición de long polling antes de responder sin dato nuevo.
+      LONG_POLLING_TIMEOUT_MS: ${LONG_POLLING_TIMEOUT_MS:-1000}
+      # Tiempo de vida de los tokens de sesión.
+      SESION_TTL: ${SESION_TTL:-12h}
+    depends_on:
+      bus:
+        condition: service_healthy
+      bd:
+        condition: service_healthy
+    networks:
+      - interna
+
+  # Motor de simulación: física 2D, sensores, actuadores y ciclo de vida de
+  # los robots. Hay un servicio por mundo o circuito y no expone puertos: solo
+  # habla con el bus de mensajes.
+  simulacion-ovalo:
+    build: ./simulacion
+    restart: unless-stopped
+    environment: &entorno-simulacion
+      NATS_URL: nats://bus:4222
+      MUNDO_ID: ovalo
+      CIRCUITO: ovalo
+      # Número máximo de robots simultáneos en este mundo.
+      MAX_ROBOTS: ${MAX_ROBOTS:-8}
+      # Frecuencia del paso fijo de la física.
+      PASO_FISICA_HZ: ${PASO_FISICA_HZ:-200}
+      # Frecuencia de publicación del estado del mundo para la vista de administrador.
+      ESTADO_MUNDO_HZ: ${ESTADO_MUNDO_HZ:-30}
+      # Temporizadores del ciclo de vida.
+      PARADA_MOTORES_S: ${PARADA_MOTORES_S:-5}
+      SALIDA_MUNDO_S: ${SALIDA_MUNDO_S:-300}
+    depends_on:
+      bus:
+        condition: service_healthy
+    networks:
+      - interna
+    # La simulación es sensible a la latencia: se le reserva CPU para que el
+    # bucle de física no compita con el resto de servicios.
+    deploy:
+      resources:
+        reservations:
+          cpus: "1"
+
+  # Segundo mundo con el circuito en 8. Descomentar para tener los dos a la vez.
+  # simulacion-ocho:
+  #   build: ./simulacion
+  #   restart: unless-stopped
+  #   environment:
+  #     <<: *entorno-simulacion
+  #     MUNDO_ID: ocho
+  #     CIRCUITO: ocho
+  #   depends_on:
+  #     bus:
+  #       condition: service_healthy
+  #   networks:
+  #     - interna
+
+  # Bus de mensajes entre la pasarela y la simulación. Sin persistencia
+  # (no se activa JetStream): los mensajes son de tipo "vale el último".
+  bus:
+    image: nats:2-alpine
+    restart: unless-stopped
+    command: ["--http_port", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - interna
+    # Para depurar: descomentar y abrir http://localhost:8222 para ver la
+    # monitorización de NATS.
+    # ports:
+    #   - "8222:8222"
+
+  # Base de datos: usuarios, credenciales y roles (administrador / usuario),
+  # e historial de carreras. No está en el camino de los datos en tiempo real.
+  bd:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-carrera}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-carrera}
+    volumes:
+      - datos-bd:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - interna
+
+networks:
+  interna:
+
+volumes:
+  datos-bd:

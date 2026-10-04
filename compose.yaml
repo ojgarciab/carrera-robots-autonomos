@@ -28,6 +28,10 @@ services:
       LONG_POLLING_TIMEOUT_MS: ${LONG_POLLING_TIMEOUT_MS:-1000}
       # Tiempo de vida de los tokens de sesión.
       SESION_TTL: ${SESION_TTL:-12h}
+      # Definiciones de los robots (YAML y capas SVG para el cliente web).
+      ROBOTS_DIR: /robots
+    volumes:
+      - ./robots:/robots:ro
     depends_on:
       bus:
         condition: service_healthy
@@ -48,13 +52,18 @@ services:
       CIRCUITO: ovalo
       # Número máximo de robots simultáneos en este mundo.
       MAX_ROBOTS: ${MAX_ROBOTS:-4}
-      # Frecuencia del paso fijo de la física.
+      # Frecuencia del paso fijo de la física. Basta para los robots de
+      # prácticas (20 cm/s); subirla para robots veloces.
       PASO_FISICA_HZ: ${PASO_FISICA_HZ:-60}
       # Frecuencia de publicación del estado del mundo para la vista de administrador.
       ESTADO_MUNDO_HZ: ${ESTADO_MUNDO_HZ:-30}
       # Temporizadores del ciclo de vida.
       PARADA_MOTORES_S: ${PARADA_MOTORES_S:-5}
       SALIDA_MUNDO_S: ${SALIDA_MUNDO_S:-300}
+      # Definiciones de los robots (parámetros físicos de cada modelo).
+      ROBOTS_DIR: /robots
+    volumes:
+      - ./robots:/robots:ro
     depends_on:
       bus:
         condition: service_healthy
@@ -75,6 +84,8 @@ services:
   #     <<: *entorno-simulacion
   #     MUNDO_ID: ocho
   #     CIRCUITO: ocho
+  #   volumes:
+  #     - ./robots:/robots:ro
   #   depends_on:
   #     bus:
   #       condition: service_healthy

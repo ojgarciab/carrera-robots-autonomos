@@ -276,7 +276,10 @@ Parámetros principales del servidor:
 | Frecuencia de la física | Pasos de simulación por segundo; **60 Hz por defecto**. Cuanto más alta, más precisa es la simulación y más CPU consume. |
 
 Los valores por defecto (60 Hz y 4 robots) están pensados para **no sobrecargar
-la máquina**. Se pueden subir si hay CPU de sobra.
+la máquina** y bastan para los robots de prácticas, que son lentos (20 cm/s).
+Para **robots veloces**, por ejemplo en competiciones, se puede **subir la
+frecuencia de la física** para mantener la precisión, siempre que haya CPU de
+sobra.
 
 En Docker estos parámetros se pasan como variables de entorno; la lista
 completa está en [Despliegue local con Docker](#despliegue-local-con-docker).
@@ -306,7 +309,10 @@ Docker local.
 | `bd` | `postgres:17-alpine` | Ninguno | Base de datos de usuarios, roles e historial, con un volumen persistente (`datos-bd`). |
 
 Todos los servicios comparten una red interna. Solo la pasarela publica un
-puerto en la máquina anfitriona. La pasarela y la simulación esperan a que el
+puerto en la máquina anfitriona. El directorio [`robots/`](robots/) se monta en
+modo de solo lectura en la pasarela, que sirve las capas SVG y la lista de
+modelos, y en la simulación, que usa los parámetros físicos. Así se pueden
+añadir o cambiar modelos sin reconstruir las imágenes. La pasarela y la simulación esperan a que el
 bus y la base de datos estén sanos (*healthcheck*) antes de arrancar.
 
 Los directorios `./pasarela` y `./simulacion`, con su `Dockerfile`, se crearán
@@ -351,10 +357,29 @@ robots se mueven sobre un plano y los circuitos son dibujos en el suelo. Algunas
 opciones válidas son Box2D, Chipmunk2D, Rapier (2D) o Matter.js, o un modelo
 cinemático/dinámico propio si es suficiente.
 
+Los robots de prácticas son **lentos** (20 cm/s como máximo), así que
+prácticamente **no derrapan ni pierden el control** aunque giren a máxima
+velocidad. Para ellos basta un **modelo cinemático de tracción diferencial**
+sin deslizamiento de las ruedas, más los límites de aceleración y deceleración
+de cada motor. Los robots veloces, por ejemplo de competición, pueden necesitar
+un modelo dinámico con rozamiento y derrape, además de una frecuencia de física
+mayor.
+
 ## Modelos de robot
 
 Los robots se ofrecen en orden de dificultad creciente. Cada modelo define sus
 sensores (entradas del algoritmo) y sus actuadores (salidas del algoritmo).
+
+Cada modelo se describe en un **fichero YAML** del directorio
+[`robots/`](robots/) (ver [Definición de los robots](#definición-de-los-robots)).
+Los dos robots de prácticas tienen estas características comunes:
+
+| Característica | Valor |
+|----------------|-------|
+| Velocidad máxima | **20 cm/s** (0,20 m/s) con los actuadores al máximo (`1`). |
+| Rango de los actuadores | De `-1` (máximo hacia atrás) a `1` (máximo hacia delante). |
+| Frecuencia de los sensores IR | 10 Hz. |
+| Separación entre sensores IR | 15 mm (3 sensores) y 12 mm (5 sensores). |
 
 ### Robot 1: sigue líneas con 3 sensores infrarrojos
 
@@ -402,9 +427,23 @@ robot de la línea y usar controles más finos (por ejemplo, PID).
 de la línea que deben seguir.**
 
 Así, la línea siempre queda bajo al menos un sensor mientras el robot esté sobre
-ella, y nunca puede "colarse" entre dos sensores sin que ninguno la detecte. Por
-ejemplo, con una línea de 19 mm de ancho, la separación entre sensores debería ser
-de menos de 19 mm.
+ella, y nunca puede "colarse" entre dos sensores sin que ninguno la detecte.
+
+Hay una segunda condición: **lo que avanza el robot entre dos lecturas de los
+sensores también debe ser menor que la anchura de la línea**. Si no, al cruzar
+la línea de frente podría atravesarla entre dos lecturas sin verla:
+
+```
+velocidad máxima × periodo de muestreo < anchura de la línea
+```
+
+Para los robots de prácticas, 0,20 m/s × 0,1 s = **20 mm** por lectura. Por eso
+se propone una **línea de 25 mm de ancho**, que cumple las dos condiciones:
+
+| Robot | Separación entre sensores | Avance por lectura | Anchura de la línea |
+|-------|---------------------------|--------------------|---------------------|
+| 3 sensores IR | 15 mm | 20 mm | 25 mm |
+| 5 sensores IR | 12 mm | 20 mm | 25 mm |
 
 ### Comportamiento de sensores y actuadores
 
@@ -417,6 +456,53 @@ de menos de 19 mm.
   **inercia** y limita la **aceleración** y la **deceleración** del motor. Por
   eso el robot tarda un tiempo en alcanzar la velocidad pedida o en frenar, y
   el algoritmo de control tiene que tenerlo en cuenta.
+- **Valor de los actuadores:** cada motor recibe un valor de `-1` a `1`. La
+  velocidad que se busca para la rueda es ese valor por la velocidad máxima del
+  motor: 20 cm/s con el valor `1` en los robots de prácticas.
+- **Motores desactivados:** cuando se desconectan los actuadores, la rueda
+  queda libre y frena con la **deceleración en reposo** del motor, más suave que
+  la frenada activa.
+
+### Definición de los robots
+
+Los parámetros de cada robot están en un fichero YAML del directorio
+[`robots/`](robots/). El formato completo se explica en
+[`robots/README.md`](robots/README.md). Incluye, entre otros:
+
+- Las **coordenadas de cada motor y de cada sensor** respecto al **centro de
+  gravedad**, que es la coordenada `[0, 0]`. El eje `+x` apunta al frente del
+  robot y el `+y` a su izquierda.
+- La **velocidad máxima** (m/s), la **aceleración y la deceleración máximas**
+  (m/s²) y la **deceleración en reposo** (m/s²) de cada motor.
+- La frecuencia de muestreo de cada sensor.
+- El **dibujo del robot** como una lista de **capas SVG** enlazadas desde el
+  YAML. El frontal web las pinta **de la primera a la última**, así que las
+  partes opacas de la última capa tapan a las de debajo. Esto permite
+  **compartir el cuerpo del robot** y cambiar solo la capa con la posición o la
+  composición de los sensores. Los dos robots de prácticas usan el mismo
+  `cuerpo-diferencial.svg`, con `sensores-3ir.svg` o con `sensores-5ir.svg`
+  encima.
+
+```yaml
+# Extracto de robots/sigue-lineas-3ir.yaml
+actuadores:
+  - id: motor_izquierdo
+    tipo: motor
+    posicion: [0.020, 0.055]     # m, respecto al centro de gravedad
+    rango: [-1, 1]
+    velocidad_max: 0.20          # m/s con el actuador a 1
+    aceleracion_max: 0.5         # m/s²
+    deceleracion_max: 0.8        # m/s²
+    deceleracion_reposo: 0.3     # m/s², con el motor desactivado
+sensores:
+  - id: ir_central
+    tipo: infrarrojo
+    posicion: [0.070, 0.0]
+    frecuencia_hz: 10
+capas:                           # de abajo arriba
+  - svg/cuerpo-diferencial.svg
+  - svg/sensores-3ir.svg
+```
 
 ## Ciclo de vida del robot en el mundo
 

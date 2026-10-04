@@ -1,0 +1,66 @@
+# Robot 1: sigue líneas con 3 sensores infrarrojos.
+#
+# Unidades: metros, m/s, m/s² y hercios.
+# Coordenadas [x, y] respecto al centro de gravedad [0, 0]:
+#   +x hacia el frente del robot, +y hacia su izquierda.
+# El formato completo se describe en robots/README.md.
+
+id: sigue-lineas-3ir
+nombre: Sigue líneas con 3 sensores IR
+descripcion: >-
+  Robot de prácticas de tracción diferencial con tres sensores infrarrojos
+  (izquierdo, central y derecho), dos motores independientes y una rueda de
+  bola trasera.
+
+cuerpo:
+  # Radio del círculo que envuelve al robot. Se usa para las colisiones entre
+  # robots y para la distancia de seguridad al entrar al mundo.
+  radio_colision: 0.085
+
+actuadores:
+  - id: motor_izquierdo
+    tipo: motor
+    posicion: [0.020, 0.055]
+    # Valor del actuador: -1 (máximo hacia atrás) a 1 (máximo hacia delante).
+    rango: [-1, 1]
+    # Velocidad lineal de la rueda con el actuador al máximo (1).
+    velocidad_max: 0.20
+    aceleracion_max: 0.5
+    deceleracion_max: 0.8
+    # Deceleración cuando el motor se desactiva (rueda libre por rozamiento).
+    deceleracion_reposo: 0.3
+  - id: motor_derecho
+    tipo: motor
+    posicion: [0.020, -0.055]
+    rango: [-1, 1]
+    velocidad_max: 0.20
+    aceleracion_max: 0.5
+    deceleracion_max: 0.8
+    deceleracion_reposo: 0.3
+
+# Apoyos sin tracción: no son entradas ni salidas del algoritmo.
+apoyos:
+  - id: rueda_bola
+    tipo: rueda_loca
+    posicion: [-0.050, 0.0]
+
+sensores:
+  - id: ir_izquierdo
+    tipo: infrarrojo
+    posicion: [0.070, 0.015]
+    frecuencia_hz: 10
+  - id: ir_central
+    tipo: infrarrojo
+    posicion: [0.070, 0.0]
+    frecuencia_hz: 10
+  - id: ir_derecho
+    tipo: infrarrojo
+    posicion: [0.070, -0.015]
+    frecuencia_hz: 10
+
+# Capas SVG del dibujo del robot, rutas relativas a este fichero. El frontal web
+# las pinta de la primera a la última: lo opaco de las últimas tapa a las
+# anteriores.
+capas:
+  - svg/cuerpo-diferencial.svg
+  - svg/sensores-3ir.svg

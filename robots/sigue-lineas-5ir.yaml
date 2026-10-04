@@ -1,0 +1,67 @@
+# Robot 2: sigue líneas con una matriz de 5 sensores infrarrojos.
+#
+# Mismo cuerpo, motores y rueda de bola que sigue-lineas-3ir.yaml; solo cambian
+# los sensores y su capa SVG.
+#
+# Unidades: metros, m/s, m/s² y hercios.
+# Coordenadas [x, y] respecto al centro de gravedad [0, 0]:
+#   +x hacia el frente del robot, +y hacia su izquierda.
+# El formato completo se describe en robots/README.md.
+
+id: sigue-lineas-5ir
+nombre: Sigue líneas con 5 sensores IR
+descripcion: >-
+  Robot de prácticas de tracción diferencial con una matriz de cinco sensores
+  infrarrojos, dos motores independientes y una rueda de bola trasera.
+
+cuerpo:
+  radio_colision: 0.085
+
+actuadores:
+  - id: motor_izquierdo
+    tipo: motor
+    posicion: [0.020, 0.055]
+    rango: [-1, 1]
+    velocidad_max: 0.20
+    aceleracion_max: 0.5
+    deceleracion_max: 0.8
+    deceleracion_reposo: 0.3
+  - id: motor_derecho
+    tipo: motor
+    posicion: [0.020, -0.055]
+    rango: [-1, 1]
+    velocidad_max: 0.20
+    aceleracion_max: 0.5
+    deceleracion_max: 0.8
+    deceleracion_reposo: 0.3
+
+apoyos:
+  - id: rueda_bola
+    tipo: rueda_loca
+    posicion: [-0.050, 0.0]
+
+sensores:
+  - id: ir_1
+    tipo: infrarrojo
+    posicion: [0.070, 0.024]
+    frecuencia_hz: 10
+  - id: ir_2
+    tipo: infrarrojo
+    posicion: [0.070, 0.012]
+    frecuencia_hz: 10
+  - id: ir_3
+    tipo: infrarrojo
+    posicion: [0.070, 0.0]
+    frecuencia_hz: 10
+  - id: ir_4
+    tipo: infrarrojo
+    posicion: [0.070, -0.012]
+    frecuencia_hz: 10
+  - id: ir_5
+    tipo: infrarrojo
+    posicion: [0.070, -0.024]
+    frecuencia_hz: 10
+
+capas:
+  - svg/cuerpo-diferencial.svg
+  - svg/sensores-5ir.svg

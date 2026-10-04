@@ -68,6 +68,23 @@ inercia del motor.
 | `posicion` | m | `[x, y]` del punto del suelo que mira el sensor, respecto al centro de gravedad. |
 | `frecuencia_hz` | Hz | Frecuencia de muestreo. `10` para los infrarrojos de los robots de prácticas. |
 
+El sensor `infrarrojo` es **digital**: vale `1` si su punto de medida está sobre la línea (a menos de `ancho_linea / 2` del trazado) y `0` si no.
+
+### Sensores de tipo `infrarrojo_promedio` (previsto)
+
+> Todavía no está implementado. Se documenta para que los contratos y los clientes ya lo admitan.
+
+Sensor **analógico** que imita mejor a un sensor real. Toma varias lecturas digitales repartidas por una pequeña zona de medida alrededor de su `posicion` y devuelve su **promedio**: un número entre `0` (ninguna lectura ve la línea) y `1` (todas la ven). Así se sabe, por ejemplo, si el sensor está justo en el borde de la línea, y los algoritmos pueden afinar más, por ejemplo con un PID que pondere por intensidad.
+
+| Campo | Unidad | Descripción |
+|-------|--------|-------------|
+| `id`, `posicion`, `frecuencia_hz` | | Igual que en `infrarrojo`. |
+| `tipo` | | `infrarrojo_promedio`. |
+| `muestras` | | Número de lecturas que se promedian en cada muestreo. |
+| `radio_medida` | m | Radio de la zona de medida donde se reparten las lecturas. |
+
+Como los valores de los sensores siempre son números, un cliente escrito para el sensor digital funciona sin cambios con este, aunque no aproveche la información extra.
+
 ## Capas SVG
 
 El dibujo del robot en el visor web se compone de **varias capas SVG

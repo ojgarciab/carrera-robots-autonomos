@@ -1,0 +1,29 @@
+# Circuito 2: ocho ("8"). Dos curvas y dos rectas que se cruzan.
+#
+# Unidades: metros y grados. Origen [0, 0] en la esquina inferior izquierda
+# del mapa, +x hacia la derecha y +y hacia arriba. El formato se describe en
+# circuitos/README.md.
+#
+# Geometría: las dos rectas pasan por el centro [1.4, 0.8] con una inclinación
+# de ±35°, así que se cruzan con un ángulo de 70° (el mínimo es 60°). Cada
+# curva es un arco de 0,4 m de radio tangente a las dos rectas; su centro está
+# a 0,4 / sen(35°) ≈ 0,6974 m del cruce.
+
+id: ocho
+nombre: Ocho
+descripcion: >-
+  Dos curvas de 0,4 m de radio unidas por dos rectas que se cruzan a 70°. En el
+  cruce los sensores ven a la vez la línea propia y la transversal, y el robot
+  debe seguir recto sin confundirse.
+
+dimensiones: [2.8, 1.6]
+ancho_linea: 0.025
+
+trazados:
+  - id: ocho
+    cerrado: true
+    tramos:
+      - {tipo: recta, desde: [0.9321, 0.4723], hasta: [1.8679, 1.1277]}
+      - {tipo: arco, centro: [2.0974, 0.8], radio: 0.4, inicio: 125, fin: -125}
+      - {tipo: recta, desde: [1.8679, 0.4723], hasta: [0.9321, 1.1277]}
+      - {tipo: arco, centro: [0.7026, 0.8], radio: 0.4, inicio: 55, fin: 305}

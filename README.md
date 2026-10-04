@@ -323,9 +323,17 @@ siguen yendo directos por el bus.
 
 **NATS nunca se expone fuera del clúster.** Los motores de simulación corren en
 distintas máquinas de un clúster Docker Swarm o Kubernetes y llegan a NATS solo
-por la **red interna** del clúster. Para proteger ese tráfico entre máquinas se
-recomienda cifrar la red interna (red *overlay* cifrada en Swarm, o políticas
-de red y cifrado del CNI en Kubernetes) o activar TLS en NATS.
+por la **red interna** del clúster.
+
+Para proteger el tráfico entre máquinas **se recomienda activar TLS en NATS**,
+o bien cifrar la red interna: red *overlay* cifrada en Swarm, o políticas de red
+y cifrado del CNI en Kubernetes u OpenShift (OCP).
+
+Como alternativa, si la red está gestionada y es privada, se pueden conectar los
+nodos del clúster por una **VLAN dedicada**, aislada del resto de la red, de
+modo que el tráfico de NATS no salga de ella. Aun en ese caso, **se recomienda
+mantener TLS** como defensa en profundidad: protege el tráfico aunque algún otro
+equipo llegue a tener acceso a la VLAN.
 
 #### Servidores activos
 

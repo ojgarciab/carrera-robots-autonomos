@@ -43,8 +43,12 @@ services:
       # Definiciones de los robots: la pasarela sirve las capas SVG al visor
       # web y entrega a cada mundo las definiciones de sus robots permitidos.
       ROBOTS_DIR: /robots
+      # Definiciones de los circuitos: la pasarela entrega a cada mundo el suyo
+      # y los sirve al visor web para la vista de administrador.
+      CIRCUITOS_DIR: /circuitos
     volumes:
       - ./robots:/robots:ro
+      - ./circuitos:/circuitos:ro
     depends_on:
       bus:
         condition: service_healthy
@@ -66,6 +70,10 @@ services:
       SESION_WEB_TTL: ${SESION_WEB_TTL:-12h}
       # Caducidad máxima de los tokens de API de los usuarios.
       TOKEN_API_MAX_DIAS: ${TOKEN_API_MAX_DIAS:-7}
+      # Primer administrador: si están definidas y aún no hay ningún
+      # administrador, se crea al arrancar. Conviene vaciarlas después.
+      ADMIN_USUARIO: ${ADMIN_USUARIO:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       # Definiciones de los robots, para elegir los permitidos en cada mundo.
       ROBOTS_DIR: /robots
     volumes:
@@ -104,6 +112,8 @@ services:
       # Identificador interno y testigo de acceso del mundo (ver README).
       MUNDO_UUID: ${MUNDO_OVALO_UUID:-}
       MUNDO_TESTIGO: ${MUNDO_OVALO_TESTIGO:-}
+      # Id del circuito (circuitos/<id>.yaml). El motor recibe su definición
+      # de la pasarela al conectarse.
       CIRCUITO: ovalo
       # Número máximo de robots simultáneos en este mundo.
       MAX_ROBOTS: ${MAX_ROBOTS:-4}

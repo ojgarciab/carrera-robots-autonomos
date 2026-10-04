@@ -36,7 +36,11 @@ las definiciones de los robots permitidos en su mundo, que usa para la física.
 | `id` | Sí | Identificador único del modelo. Es el que usa el cliente para elegirlo. |
 | `nombre` | Sí | Nombre legible del modelo. |
 | `descripcion` | No | Descripción breve. |
-| `cuerpo.radio_colision` | Sí | Radio (m) del círculo que envuelve al robot. Se usa para las colisiones entre robots y para la distancia de seguridad al entrar al mundo. |
+| `cuerpo.radio_colision` | Sí | Radio (m) del círculo que envuelve al robot. Se usa para las colisiones entre robots y con las paredes, y para la distancia de seguridad al entrar al mundo. |
+| `cuerpo.masa` | Sí | Masa del robot en kg. Decide quién empuja a quién en los choques. Los robots de prácticas tienen todos la misma (0,25 kg). |
+| `cuerpo.momento_inercia` | No | Momento de inercia en kg·m² respecto al centro de gravedad. Si no se indica, se calcula como el de un disco uniforme: `masa × radio_colision² / 2`. |
+| `cuerpo.rozamiento` | Sí | Coeficiente de rozamiento del cuerpo con otros robots y con las paredes. Hace que el robot se arrastre por una pared o que gire al rozarla. |
+| `cuerpo.restitucion` | Sí | Coeficiente de restitución de los choques, de `0` (no rebota) a `1` (rebota sin perder energía). |
 | `actuadores` | Sí | Lista de actuadores (ver abajo). |
 | `apoyos` | No | Elementos sin tracción, como una rueda de bola. No son entradas ni salidas del algoritmo; sirven para documentar el robot. |
 | `sensores` | Sí | Lista de sensores (ver abajo). |
@@ -54,10 +58,17 @@ las definiciones de los robots permitidos en su mundo, que usa para la física.
 | `aceleracion_max` | m/s² | Aceleración máxima para alcanzar una velocidad mayor. |
 | `deceleracion_max` | m/s² | Deceleración máxima cuando se pide una velocidad menor (frenada activa). |
 | `deceleracion_reposo` | m/s² | Deceleración cuando el motor está **desactivado**, por ejemplo tras perder la conexión: la rueda queda libre y frena solo por el rozamiento. |
+| `adherencia` | | Coeficiente de rozamiento de la rueda con el suelo. Limita la fuerza que puede transmitir la rueda antes de patinar, tanto hacia delante como de lado. |
 
 La velocidad objetivo de la rueda es `valor × velocidad_max`. La simulación se
 acerca a ella respetando `aceleracion_max` o `deceleracion_max`, lo que da la
 inercia del motor.
+
+La rueda empuja al robot para que el suelo, bajo ella, se mueva a esa velocidad,
+y se resiste a deslizar de lado. Las dos fuerzas están limitadas por
+`adherencia × peso sobre la rueda`. Mientras nada estorba, el robot se mueve
+igual que con un modelo sin deslizamiento. Cuando otro robot lo empuja o choca
+con una pared, la rueda puede **patinar**.
 
 ### Sensores de tipo `infrarrojo`
 
@@ -67,6 +78,23 @@ inercia del motor.
 | `tipo` | | `infrarrojo`: sensor orientado al suelo que detecta la línea. |
 | `posicion` | m | `[x, y]` del punto del suelo que mira el sensor, respecto al centro de gravedad. |
 | `frecuencia_hz` | Hz | Frecuencia de muestreo. `10` para los infrarrojos de los robots de prácticas. |
+
+El sensor `infrarrojo` es **digital**: vale `1` si su punto de medida está sobre la línea (a menos de `ancho_linea / 2` del trazado) y `0` si no.
+
+### Sensores de tipo `infrarrojo_promedio` (previsto)
+
+> Todavía no está implementado. Se documenta para que los contratos y los clientes ya lo admitan.
+
+Sensor **analógico** que imita mejor a un sensor real. Toma varias lecturas digitales repartidas por una pequeña zona de medida alrededor de su `posicion` y devuelve su **promedio**: un número entre `0` (ninguna lectura ve la línea) y `1` (todas la ven). Así se sabe, por ejemplo, si el sensor está justo en el borde de la línea, y los algoritmos pueden afinar más, por ejemplo con un PID que pondere por intensidad.
+
+| Campo | Unidad | Descripción |
+|-------|--------|-------------|
+| `id`, `posicion`, `frecuencia_hz` | | Igual que en `infrarrojo`. |
+| `tipo` | | `infrarrojo_promedio`. |
+| `muestras` | | Número de lecturas que se promedian en cada muestreo. |
+| `radio_medida` | m | Radio de la zona de medida donde se reparten las lecturas. |
+
+Como los valores de los sensores siempre son números, un cliente escrito para el sensor digital funciona sin cambios con este, aunque no aproveche la información extra.
 
 ## Capas SVG
 

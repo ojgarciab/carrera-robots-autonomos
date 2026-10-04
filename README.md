@@ -18,12 +18,14 @@ El código de cada componente vive en su propio repositorio:
 
 | Repositorio | Componente |
 |-------------|------------|
-| [`carrera-robots-autonomos`](https://github.com/ojgarciab/carrera-robots-autonomos) (este) | Repositorio común: documentación, contratos entre componentes, definiciones de robots y circuitos, despliegue de referencia (`compose.yaml`) y configuración de NATS. |
+| [`carrera-robots-autonomos`](https://github.com/ojgarciab/carrera-robots-autonomos) (este) | Repositorio común: documentación, [contratos entre componentes](contratos/), definiciones de [robots](robots/) y [circuitos](circuitos/), despliegue de referencia (`compose.yaml`) y configuración de NATS. |
 | [`robot-2d-pasarela`](https://github.com/ghCreaR/robot-2d-pasarela) | [Pasarela de API](#reparto-de-responsabilidades) en tiempo real: REST, WebSocket, validación de tokens y autenticación de los motores en NATS. |
 | [`robot-2d-motor-fisicas`](https://github.com/ghCreaR/robot-2d-motor-fisicas) | [Motor de simulación](#reparto-de-responsabilidades) de cada mundo: física 2D, sensores y actuadores. |
 | [`robot-2d-interfaz-web`](https://github.com/ghCreaR/robot-2d-interfaz-web) | [Interfaz de gestión](#interfaz-de-gestión): usuarios, mundos, accesos y tokens de API. Es la dueña del esquema de la base de datos. |
 | [`robot-2d-visor-web`](https://github.com/ghCreaR/robot-2d-visor-web) | [Visor web](#visor-web): ficheros estáticos para ver la carrera y los sensores de los robots. |
 | [`robot-2d-cliente-referencia-python`](https://github.com/ghCreaR/robot-2d-cliente-referencia-python) | Cliente de control de referencia en Python para los sigue líneas. |
+
+Cada repositorio tiene un `Plan.md` con su plan de implementación. Las interfaces entre componentes (API de cliente, mensajes del bus y esquema de la base de datos) se definen en un único sitio, el directorio [`contratos/`](contratos/), y cualquier cambio en ellas se acuerda ahí antes de cambiar el código.
 
 ## Arquitectura general
 
@@ -93,7 +95,7 @@ es de solo lectura. Tiene **dos vistas**:
 
 | Vista | Qué muestra | Uso típico |
 |-------|-------------|------------|
-| **Administrador** | El circuito y **todos** los robots con sus **coordenadas y orientación exactas**, dibujados con sus [capas SVG](robots/README.md#capas-svg). Sobre cada robot se muestra una **etiqueta con el nombre del usuario** al que pertenece. | Proyectar la prueba o la carrera en televisiones o pantallas grandes. |
+| **Administrador** | El circuito y **todos** los robots con sus **coordenadas y orientación exactas**, dibujados con sus [capas SVG](robots/README.md#capas-svg). Sobre cada robot se muestra una **etiqueta con el nombre del usuario** al que pertenece. Al seleccionar un robot se ven también **los valores de sus sensores**. | Proyectar la prueba o la carrera en televisiones o pantallas grandes, y revisar el comportamiento de cualquier robot. |
 | **Usuario** | **Solo los valores de los sensores de un robot**. No muestra la posición real ni los robots de los demás. | Que el dueño depure su algoritmo viendo lo mismo que "ve" su robot, o que terceros sigan ese robot con el token de solo lectura. |
 
 Así se mantiene la regla de que un participante solo dispone de la información
@@ -102,7 +104,9 @@ vista completa de la carrera.
 
 El visor se autentica con un **token de API de solo lectura**. La vista de
 administrador solo está disponible si el token pertenece a un usuario con **rol
-de administrador**.
+de administrador**, que puede ver además los sensores de **cualquier robot**.
+
+El visor muestra **un mundo cada vez**: para ver otro, se cambia de mundo.
 
 **Robot fuera del mundo.** Si el robot que se está viendo no está en el mundo,
 por ejemplo porque su dueño se desconectó hace más de 5 minutos o salió de forma
@@ -122,8 +126,10 @@ control y los visores usan tokens de API. Permite:
   nombre, los robots permitidos y si están **activos** en ese momento.
 - **Generar y revocar los tokens de API** del usuario (ver
   [Tokens de API](#tokens-de-api)).
-- A los **administradores**: **dar de alta usuarios y mundos**, generar el
-  testigo de acceso de cada mundo (ver [Registro de mundos](#registro-de-mundos))
+- **Cambiar su contraseña** cuando quiera.
+- A los **administradores**: **dar de alta usuarios y mundos**, **restablecer
+  la contraseña** de un usuario (que le comunican ellos mismos y que el usuario
+  puede cambiar después), generar el testigo de acceso de cada mundo (ver [Registro de mundos](#registro-de-mundos))
   y **gestionar a qué mundos tiene acceso cada usuario** (ver
   [Acceso de los usuarios a los mundos](#acceso-de-los-usuarios-a-los-mundos)).
 
@@ -165,7 +171,8 @@ API**:
   peticiones de la API indican siempre el mundo, por ejemplo con rutas como
   `/mundos/<uuid>/…`.
 - Si un administrador **retira el acceso** a un mundo donde el usuario tiene un
-  robot, el robot sale del mundo en ese momento.
+  robot, el robot sale del mundo en ese momento: la pasarela recibe el aviso de
+  la base de datos y pide al motor que lo **expulse**.
 
 ### Tokens de API
 
@@ -307,7 +314,7 @@ comunican por un **bus de mensajes**.
   │          MOTOR DE SIMULACIÓN (uno por mundo/circuito)    │
   │  - Bucle de física 2D a paso fijo                        │
   │  - Muestreo de sensores a su frecuencia (10 Hz IR)       │
-  │  - Inercia, aceleración y deceleración de los motores    │
+  │  - Inercia, aceleración, choques, empujes y paredes      │
   │  - Ciclo de vida: entrada, temporizadores, salida        │
   │  - Límite de número máximo de robots                     │
   └──────────────────────────────────────────────────────────┘
@@ -384,9 +391,22 @@ pasarela, para no añadir latencia. Para autenticarlo se usa el mecanismo de
 4. La respuesta va firmada con una clave (*nkey*) que solo conoce la pasarela;
    NATS solo acepta respuestas con esa firma.
 
+Para que el motor pueda recibir las respuestas a sus propias peticiones sin
+salirse de sus permisos, usa como buzón de respuestas `mundo.<uuid>.buzon` en
+lugar del `_INBOX` por defecto de NATS. Además, los permisos le dejan responder a
+las peticiones de `control` que le hace la pasarela (ver
+[`contratos/bus.md`](contratos/bus.md#identidad-y-permisos-del-motor)).
+
 Así la base de datos es la única fuente de verdad, dar de alta o revocar un
 mundo no obliga a reconfigurar ni a reiniciar NATS, y los datos en tiempo real
 siguen yendo directos por el bus.
+
+**Revocar el testigo corta la conexión.** Si un administrador regenera o revoca
+el testigo de un mundo, la pasarela recibe el aviso de la base de datos y
+**expulsa al instante** la conexión del motor de NATS, con la operación `KICK`
+de la cuenta de sistema de NATS. El motor solo podrá volver a conectarse con el
+testigo nuevo. Para ello la pasarela necesita, además de su usuario normal, un
+usuario en la cuenta de sistema de NATS con permiso solo para esa operación.
 
 **NATS nunca se expone fuera del clúster.** Los motores de simulación corren en
 distintas máquinas de un clúster Docker Swarm o Kubernetes y llegan a NATS solo
@@ -418,8 +438,8 @@ máximo admitido. Con esos latidos la pasarela:
 Un mundo sin latidos durante un tiempo se da por parado.
 
 Al conectarse, el motor pide a la pasarela la **configuración de su mundo**: los
-robots permitidos y sus definiciones YAML. Así no necesita tener una copia del
-directorio `robots/`.
+robots permitidos y sus definiciones YAML, y la definición de su circuito. Así no
+necesita tener una copia de los directorios `robots/` y `circuitos/`.
 
 ### Mensajes entre componentes
 
@@ -428,11 +448,13 @@ directorio `robots/`.
 | `mundo.<uuid>.robot.<id>.sensores` | simulación → pasarela | Lecturas de sensores con su marca de tiempo. |
 | `mundo.<uuid>.robot.<id>.actuadores` | pasarela → simulación | Nueva consigna de los motores. |
 | `mundo.<uuid>.robot.<id>.actividad` | pasarela → simulación | Aviso de que el cliente sigue vivo (solo con token de lectura-escritura: lectura de sensores o `ping` por polling, conexión o desconexión WebSocket). Se puede agrupar, por ejemplo uno por segundo como máximo. |
-| `mundo.<uuid>.control` | pasarela → simulación | Peticiones de entrada y de salida voluntaria de robots, con respuesta (aceptado o lleno). |
+| `mundo.<uuid>.control` | pasarela → simulación | Peticiones de entrada, salida voluntaria y expulsión de robots, y listado de los robots presentes, con respuesta (aceptado, lleno…). |
 | `mundo.<uuid>.estado` | simulación → pasarela | Posición y orientación exactas de todos los robots, solo para la vista de administrador. |
 | `mundo.<uuid>.eventos` | simulación → pasarela | Robot que entra, sale o pierde los actuadores. |
 | `mundo.<uuid>.latido` | simulación → pasarela | El mundo está activo: circuito, robots presentes y máximo admitido. |
-| `mundo.<uuid>.configuracion` | simulación → pasarela | Petición de la configuración del mundo al conectarse (robots permitidos y sus definiciones). |
+| `mundo.<uuid>.configuracion` | simulación → pasarela | Petición de la configuración del mundo al conectarse (robots permitidos y sus definiciones, y el circuito). |
+
+El formato exacto de cada mensaje está en [`contratos/bus.md`](contratos/bus.md).
 
 Todos los temas de un mundo empiezan por `mundo.<uuid>.`, de modo que un único
 permiso (`mundo.<uuid>.>`) basta para aislar cada motor de simulación de los
@@ -579,7 +601,9 @@ de gestión y el visor publican puertos en la máquina anfitriona; el bus y la
 base de datos no son accesibles desde fuera. El directorio [`robots/`](robots/)
 se monta en modo de solo lectura en la pasarela, que sirve las capas SVG al
 visor y entrega a cada mundo las definiciones de sus robots permitidos, y en la
-interfaz de gestión, que los ofrece al configurar los mundos. Así se pueden
+interfaz de gestión, que los ofrece al configurar los mundos. El directorio
+[`circuitos/`](circuitos/) se monta igual en la pasarela, que entrega a cada
+mundo su circuito y lo sirve al visor para la vista de administrador. Así se pueden
 añadir o cambiar modelos sin reconstruir las imágenes. La pasarela espera a que
 el bus y la base de datos estén sanos (*healthcheck*) antes de arrancar, la
 interfaz espera a la base de datos y los motores esperan al bus y a la pasarela.
@@ -618,8 +642,12 @@ vez y se guarda en `.env`.
    docker compose up -d --build
    ```
 
-3. Abrir la interfaz de gestión en `http://localhost:8082`, entrar como
-   administrador, **dar de alta el mundo** y copiar su UUID y su testigo en
+3. Abrir la interfaz de gestión en `http://localhost:8082` y entrar como
+   administrador. El primer administrador se crea al arrancar si se han
+   definido `ADMIN_USUARIO` y `ADMIN_PASSWORD` en el `.env` (solo cuando aún no
+   hay ninguno), o en cualquier momento con
+   `docker compose exec interfaz python manage.py crear_admin`. Después,
+   **dar de alta el mundo** y copiar su UUID y su testigo en
    `MUNDO_OVALO_UUID` y `MUNDO_OVALO_TESTIGO` del `.env`. Dar acceso a ese mundo
    a los usuarios que lo vayan a usar.
 
@@ -659,6 +687,7 @@ plantilla.
 | `INTERFAZ_PUERTO` | `8082` | `interfaz` | Puerto de la máquina anfitriona donde se publica la interfaz de gestión. |
 | `SESION_WEB_TTL` | `12h` | `interfaz` | Duración de la sesión en la interfaz de gestión. No afecta a los tokens de API. |
 | `TOKEN_API_MAX_DIAS` | `7` | `interfaz` | Caducidad máxima de los tokens de API. |
+| `ADMIN_USUARIO`, `ADMIN_PASSWORD` | *(vacías)* | `interfaz` | Si están definidas y no hay ningún administrador, se crea al arrancar con estos datos. Conviene borrarlas del `.env` después. |
 | `VISOR_PUERTO` | `8081` | `visor` | Puerto de la máquina anfitriona donde se publica el visor. |
 | `PASARELA_URL_PUBLICA` | `http://localhost:8080` | `visor` | Dirección de la pasarela tal y como la ve el navegador; el visor la usa para conectarse. |
 | `MUNDO_OVALO_UUID` | *(vacía)* | simulación | UUID del mundo, obtenido al darlo de alta en la interfaz de gestión. |
@@ -674,16 +703,29 @@ plantilla.
 
 Puede usarse **cualquier motor de físicas**, ya que **basta con que sea 2D**: los
 robots se mueven sobre un plano y los circuitos son dibujos en el suelo. Algunas
-opciones válidas son Box2D, Chipmunk2D, Rapier (2D) o Matter.js, o un modelo
-cinemático/dinámico propio si es suficiente.
+opciones válidas son Box2D, Chipmunk2D (en Python, `pymunk`), Rapier (2D) o
+Matter.js.
 
-Los robots de prácticas son **lentos** (20 cm/s como máximo), así que
-prácticamente **no derrapan ni pierden el control** aunque giren a máxima
-velocidad. Para ellos basta un **modelo cinemático de tracción diferencial**
-sin deslizamiento de las ruedas, más los límites de aceleración y deceleración
-de cada motor. Los robots veloces, por ejemplo de competición, pueden necesitar
-un modelo dinámico con rozamiento y derrape, además de una frecuencia de física
-mayor.
+Hace falta un **modelo dinámico**, con masas y fuerzas, y no solo uno
+cinemático, porque los robots interactúan entre sí y con el mapa:
+
+- **Los robots pueden empujarse.** Cada robot tiene su **masa** (los de
+  prácticas, todos la misma) y en un choque se reparten el impulso según sus
+  masas y velocidades.
+- **Los bordes del mapa son paredes.** Un robot que llega a una **rebota**, se
+  **arrastra** a lo largo de ella o **gira** por el rozamiento, según el ángulo
+  de incidencia, su velocidad y los coeficientes de rozamiento y restitución
+  del robot y de la pared.
+- **Las ruedas pueden patinar.** Cada rueda empuja al robot hasta su velocidad
+  objetivo y se resiste a deslizar de lado, pero con una fuerza limitada por su
+  **adherencia**. Si otro robot o una pared la vencen, patina.
+
+Mientras nada estorba, los robots de prácticas son **lentos** (20 cm/s como
+máximo), así que sus ruedas no patinan y se mueven igual que con un modelo
+cinemático de tracción diferencial con los límites de aceleración y
+deceleración de cada motor. Los parámetros físicos de cada robot (masa,
+rozamiento, restitución y adherencia) están en su [definición](robots/README.md)
+y los de las paredes, en la del [circuito](circuitos/README.md#paredes).
 
 ## Modelos de robot
 
@@ -770,6 +812,12 @@ se propone una **línea de 25 mm de ancho**, que cumple las dos condiciones:
 - **Sensores infrarrojos:** cada sensor genera **un valor cada 0,1 s (10 lecturas
   por segundo)**. El servidor intenta mantener esa frecuencia al enviar la
   telemetría.
+- **Valor de los sensores infrarrojos:** de momento son **digitales**: `1` si
+  ven la línea y `0` si no. Más adelante se añadirá un sensor analógico que
+  toma varias lecturas y devuelve su promedio, de `0` a `1` (ver
+  [tipos de sensor](robots/README.md#sensores-de-tipo-infrarrojo_promedio-previsto)).
+  Por eso los clientes deben tratar los valores como números y no como
+  booleanos.
 - **Motores:** el servidor aplica la nueva consigna de los motores **en cuanto
   la recibe**, sin esperar al siguiente ciclo de sensores. Pero la velocidad
   real de la rueda no cambia al instante: la simulación tiene en cuenta la
@@ -899,10 +947,17 @@ robot aunque este no esté en el mundo:
 
 ## Circuitos de ejemplo
 
+Cada circuito se define en un fichero YAML del directorio
+[`circuitos/`](circuitos/), con rectas y arcos en metros (ver
+[`circuitos/README.md`](circuitos/README.md)). El motor de simulación elige el
+suyo con la variable `CIRCUITO`.
+
 ### Circuito 1: óvalo ("O")
 
 Circuito en **O** típico: **dos rectas y dos curvas**. Es el circuito de
-iniciación para comprobar que el robot sigue la línea de forma estable.
+iniciación para comprobar que el robot sigue la línea de forma estable. Está
+definido en [`circuitos/ovalo.yaml`](circuitos/ovalo.yaml): rectas de 1 m y
+curvas de 0,5 m de radio en un mapa de 2,4 × 1,6 m.
 
 ```
       ╭──────────────────╮
@@ -919,7 +974,9 @@ con un ángulo de cruce de **al menos 60°**.
 El cruce es la principal dificultad: al pasar por él los sensores ven a la vez la
 línea propia y la transversal, y el algoritmo debe seguir recto sin confundirse.
 Un ángulo de cruce de 60° o más garantiza que las dos líneas se distinguen con
-claridad en el punto de intersección.
+claridad en el punto de intersección. Está definido en
+[`circuitos/ocho.yaml`](circuitos/ocho.yaml): curvas de 0,4 m de radio y rectas
+que se cruzan a 70° en un mapa de 2,8 × 1,6 m.
 
 ```
       ╭───╮       ╭───╮
